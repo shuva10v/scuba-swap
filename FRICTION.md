@@ -64,6 +64,30 @@ on-chain `rawBalances` probe to confirm.
 `npm view @1inch/swap-vm` 404s. Deps must be pulled as git refs. `swap-vm`'s own
 `package.json` already does this for `aqua` (`github:1inch/aqua#v1.0.0`).
 
+### F-13 — `asView()` silently swallows `vm.expectRevert`
+`SwapVM.asView()` is an *external* function returning `ISwapVM(address(this))`,
+and the idiomatic call is `router.asView().quote(...)`. Under Foundry that is two
+external calls, so:
+
+```solidity
+vm.expectRevert(UnknownOpcode.selector);
+router.asView().quote(order, amount, takerData);   // binds to asView(), not quote()
+```
+
+`expectRevert` attaches to `asView()`, which never reverts — the test fails with
+"next call did not revert as expected", or worse, *passes* vacuously if the
+cheatcode is looser. Both of our negative tests hit this. The fix is to hoist:
+
+```solidity
+ISwapVM v = router.asView();
+vm.expectRevert(UnknownOpcode.selector);
+v.quote(order, amount, takerData);
+```
+
+A `view`-declared `quote` would have removed the need for `asView()` entirely
+(see F-03); the accessor exists only to paper over `quote` not being `view`, and
+this is the second bug that stems from it.
+
 ### F-11 — `feeBps` is not in bps. `BPS = 1e9`.
 Cost us a failing test and a confused debugging detour. Every fee instruction
 takes a parameter named `feeBps`, documented as `4 bytes (fee in bps, 1e9 = 100%)`

@@ -254,21 +254,27 @@ Proves the Aqua plumbing before any of our code exists.
 
 Proves extension + program encoding independently of World ID.
 
-- [ ] `IWorldIDRouter`, `ByteHasher` (from the PoC, unchanged)
-- [ ] `ScubaOpcodes` overriding `_runOpcode`, `super` fallthrough
-- [ ] `ScubaSwapVMRouter`
-- [ ] Temporary `0x27` = always-pass no-op
-- [ ] Test: every Phase-1 assertion still passes on the new router
-- [ ] Test: stock opcode bytes unchanged (`XYCSwap` is still `0x50`)
-- [ ] Test: unknown opcode still reverts `UnknownOpcode`
+- [x] `ScubaOpcodes` overriding `_runOpcode`, `super` fallthrough
+- [x] `ScubaSwapVMRouter`
+- [x] Temporary `0x27` = always-pass no-op
+- [x] Test: every Phase-1 assertion still passes on the new router
+- [x] Test: stock opcode bytes unchanged (`XYCSwap` is still `0x50`)
+- [x] Test: unknown opcode still reverts `UnknownOpcode`
 
 **Exit:** our router is a strict superset of `AquaSwapVMRouter`.
 
-### Phase 3 — Real World ID guard (~6h) ⚠️ blocked on fixture
+### Phase 3 — Real World ID guard (~6h)
 
-- [ ] **Receive proof fixture from user** (see §5) → `test/fixtures/worldid.json`
-- [ ] Standalone `WorldIdSpike.t.sol` on the fork: replicate the PoC's
-      `verifyProof` call verbatim and get it green **before** touching SwapVM
+- [ ] `IWorldIDRouter`, `ByteHasher` (from the PoC, unchanged)
+- [ ] `MockWorldIDRouter` — accepts any proof. **Everything below is built
+      and tested against this**, so Phase 3 is not blocked on a real proof.
+- [ ] Encoding-agreement test: derive `signalHash` / `externalNullifier` in
+      Solidity *and* independently off-chain, assert the field elements match.
+      This is the one class of bug a mock cannot catch — cross-system encoding
+      disagreement with IDKit — and it needs no proof to check.
+- [ ] *(when fixture arrives)* one e2e test against the real router at
+      `0x163b…`, proving the last mile: signal encoding, groupId, proof
+      element order, root validity
 - [ ] `EXTERNAL_NULLIFIER` immutable, derived in the constructor from
       `(appId, action)` via the PoC's `ByteHasher` double-`hashToField`
 - [ ] `spentNullifiers` mapping + `NullifierAlreadySpent` error
