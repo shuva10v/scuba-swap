@@ -1,0 +1,35 @@
+[profile.default]
+src                     = "src"
+test                    = "test"
+out                     = "out"
+libs                    = ["node_modules"]
+auto_detect_remappings  = false
+solc_version            = "0.8.30"
+optimizer               = true
+optimizer_runs          = 700
+via_ir                  = true
+fs_permissions          = [{ access = "read", path = "./test/fixtures" }]
+
+# Fast iteration: same sources, no IR pipeline. Use for logic tests.
+# `forge test --profile fast`. Gas numbers from this profile are NOT comparable
+# to the default profile — always snapshot gas under [profile.default].
+[profile.fast]
+via_ir         = false
+optimizer      = true
+optimizer_runs = 200
+
+[profile.ci]
+via_ir         = true
+optimizer      = true
+optimizer_runs = 700
+
+[fmt]
+single_line_statement_blocks = "multi"
+multiline_func_header        = "all"
+override_spacing             = false
+bracket_spacing              = true
+int_types                    = "long"
+number_underscore            = "thousands"
+
+[rpc_endpoints]
+mainnet = "${MAINNET_RPC_URL}"
