@@ -241,12 +241,12 @@ Estimates assume ~30h budget. Phases 0–4 are the deliverable; 5–6 are stretc
 
 Proves the Aqua plumbing before any of our code exists.
 
-- [ ] `test/fork/ForkBase.t.sol` — `vm.createSelectFork(MAINNET_RPC_URL)` at latest block
-- [ ] Constants: real Aqua, WETH, USDC; `deal()` maker balances
-- [ ] Deploy **stock** `AquaSwapVMRouter(aqua, WETH, owner, "SwapVM", "1.0.0")` on the fork
-- [ ] Maker `approve(aqua)` + `aqua.ship(router, abi.encode(order), [USDC,WETH], [bal,bal])`
-- [ ] EOA taker (not `MockTaker`) executes `xycSwap + 30bps` end to end; assert balances
-- [ ] Same via `asView().quote()`; assert quote == swap
+- [x] `test/fork/ForkBase.t.sol` — `vm.createSelectFork(MAINNET_RPC_URL)` at latest block
+- [x] Constants: real Aqua, WETH, USDC; `deal()` maker balances
+- [x] Deploy **stock** `AquaSwapVMRouter(aqua, WETH, owner, "SwapVM", "1.0.0")` on the fork
+- [x] Maker `approve(aqua)` + `aqua.ship(router, abi.encode(order), [USDC,WETH], [bal,bal])`
+- [x] EOA taker (not `MockTaker`) executes `xycSwap + 30bps` end to end; assert balances
+- [x] Same via `asView().quote()`; assert quote == swap
 
 **Exit:** a real swap moves real mainnet USDC/WETH through shared Aqua liquidity.
 

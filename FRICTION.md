@@ -64,6 +64,44 @@ on-chain `rawBalances` probe to confirm.
 `npm view @1inch/swap-vm` 404s. Deps must be pulled as git refs. `swap-vm`'s own
 `package.json` already does this for `aqua` (`github:1inch/aqua#v1.0.0`).
 
+### F-11 — `feeBps` is not in bps. `BPS = 1e9`.
+Cost us a failing test and a confused debugging detour. Every fee instruction
+takes a parameter named `feeBps`, documented as `4 bytes (fee in bps, 1e9 = 100%)`
+— but the denominator constant is:
+
+```solidity
+uint256 constant BPS = 1e9;
+```
+
+So the unit is parts-per-**billion**, and `feeBps = 30` — which any DeFi developer
+reads as 0.30% — is actually 0.000003%. The failure mode is the dangerous kind:
+**nothing reverts.** `buildFlatFee` only rejects values *above* 1e9, so a maker
+who ships a strategy meaning "0.30% fee" gets a working strategy that charges
+essentially nothing, and only discovers it by reconciling revenue. 0.30% is
+`3_000_000`.
+
+Renaming the parameter to `feePpb`, or making the doc-comment lead with the
+denominator instead of the word "bps", would remove the trap entirely.
+
+### F-12 — Fee instructions recursively re-enter `runLoop`
+`_flatFeeAmountInXD` does not compute a fee and return. It **calls
+`ctx.runLoop()` itself**, so the rest of the program executes *nested inside* the
+fee instruction:
+
+```solidity
+ctx.swap.amountIn -= fee;
+ctx.runLoop();          // <-- the entire remainder of the program runs here
+ctx.swap.amountIn += fee;
+```
+
+Nothing in the opcode list, the program-composition docs, or the instruction name
+suggests that some instructions are wrappers rather than statements. It matters
+for any guard instruction: a guard placed *after* a fee opcode runs inside the
+nested loop, at a different point in the amount lifecycle than a guard placed
+before it. It also explains the otherwise-cryptic
+`FeeShouldBeAppliedBeforeSwapAmountsComputation` require. Our rule — identity
+guard first, always — is partly a consequence of this.
+
 ### F-10 — The released tag and `main` have *incompatible* extension mechanisms
 This one cost real time. `swap-vm@v1.0.1` (the newest git tag) dispatches through
 a fixed-size array of function pointers returned by `_opcodes()`, which a router
