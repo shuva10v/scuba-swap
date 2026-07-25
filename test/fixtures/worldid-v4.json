@@ -1,6 +1,6 @@
 {
   "_comment": [
-    "VERIFIED World ID 4.0 proof — STAGING ONLY.",
+    "VERIFIED World ID 4.0 proof \u2014 STAGING ONLY.",
     "",
     "Confirmed to PASS verify() on the staging WorldIDVerifier proxy",
     "0x703a6316c975DEabF30b637c155edD53e24657DB on World Chain (chainid 480),",
@@ -10,7 +10,7 @@
     "persistent pseudonymous identifier derived from a real Orb-verified World ID:",
     "it is stable for a given (identity, rp_id, action), so publishing one would",
     "let anyone link that person's future verifications for the same action.",
-    "Production fixtures stay out of the repo — see .gitignore.",
+    "Production fixtures stay out of the repo \u2014 see .gitignore.",
     "",
     "Behaviour was cross-checked against a production proof and the two verifiers",
     "are byte-for-byte identical in every respect measured below, so this fixture",
@@ -28,12 +28,11 @@
     "2. The verifier does NOT enforce expiry.",
     "   Both proofs verified while their own expiresAtMin was already in the past",
     "   (staging by 189s, production by 314s). expiresAtMin is a committed public",
-    "   input — perturbing it by 1 reverts ProofInvalid() — but it is never",
+    "   input \u2014 perturbing it by 1 reverts ProofInvalid() \u2014 but it is never",
     "   compared to block.timestamp. Freshness is the INTEGRATING CONTRACT's",
     "   responsibility. ScubaSwap's guard MUST enforce",
     "   require(expiresAtMin >= block.timestamp). See FRICTION W-06."
   ],
-
   "verifier": {
     "chain": "World Chain",
     "chainId": 480,
@@ -41,7 +40,6 @@
     "staging": "0x703a6316c975DEabF30b637c155edD53e24657DB",
     "production": "0x00000000009E00F9FE82CfeeBB4556686da094d7"
   },
-
   "verifyArgs": {
     "_order": "exactly the argument order of verify(...) above",
     "nullifier": "0x26efd602e274376068fddd99992d32c5793ca2cc859dc6e4bc06336297eb60d5",
@@ -62,7 +60,6 @@
       "1273623503493030971440427686945873491346167620388747573336306150755243209408"
     ]
   },
-
   "raw": {
     "action": "world-demo-v2",
     "environment": "staging",
@@ -87,7 +84,6 @@
       }
     ]
   },
-
   "measuredBehaviour": {
     "_comment": "Measured against the live verifiers. Staging and production behaved identically on every row.",
     "baseline": "OK (returns 0x)",
@@ -99,11 +95,28 @@
     "genesisIssuedAtMinNonZero": "ProofInvalid() 0x7fcdd1f4",
     "wrongRpId": "reverts (no selector)",
     "wrongIssuerSchemaId": "UnregisteredIssuerSchemaId() 0xc7eb504d",
-    "crossEnvironment": "InvalidMerkleRoot() 0x9dd854d3 — confirms proof[4] is the Merkle root and that staging/production are separate identity trees",
-    "alreadyExpired": "STILL VERIFIES — see finding 2 above"
+    "crossEnvironment": "InvalidMerkleRoot() 0x9dd854d3 \u2014 confirms proof[4] is the Merkle root and that staging/production are separate identity trees",
+    "alreadyExpired": "STILL VERIFIES \u2014 see finding 2 above"
   },
-
   "unknowns": {
     "signalPreimage": "signal_hash is one-way and cannot be inverted. ScubaSwap's guard derives signalHash from ctx.query.taker, so the taker address in any e2e test MUST be the address this proof was bound to. Needed from the fixture author. Note it is identical across staging and production, so whatever it is, it is stable."
+  },
+  "solidityArgs": {
+    "_comment": "Same values as verifyArgs, hex-encoded so forge's vm.parseJsonUint can read them directly. Keep in sync.",
+    "nullifier": "0x26efd602e274376068fddd99992d32c5793ca2cc859dc6e4bc06336297eb60d5",
+    "action": "0x00398153eb6b625bf04bb424b6d37400d99bccc0cc2e777d9c736de1609ef3dd",
+    "rpId": "0x2c23993348beb0ce",
+    "nonce": "0x00d8df4f8cf01c2c27e74f922ee17dcc747ff80407a825692e096e44c2826c2a",
+    "signalHash": "0x00e9707d0e6171f728f7473c24cc0432a9b07eaaf1efed6a137a4a8c12c79552",
+    "expiresAtMin": "0x000000006a6488ed",
+    "issuerSchemaId": "0x0000000000000001",
+    "credentialGenesisIssuedAtMin": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "proof": [
+      "0x46f5615d181dfc8bc4cec2ad7056886057840d5b776fc426ddf32aa442f80a27",
+      "0x1b4325b7c6e1a0332360d8fd57806b52a5ac1f8cff6797349a47bb5410e7f057",
+      "0x08186533d1b509fca6691b944c5adab4957c604ab17b8f05e3323397cec07cd5",
+      "0x3dd66df471c8ac455b5fd887226cbbe396fa97c9e021e7ce95774f677ec657be",
+      "0x02d0d8695402907ddbe34ac8969704a4d3fcd801c0d5cf9dc3f15dd9d05d32c0"
+    ]
   }
 }

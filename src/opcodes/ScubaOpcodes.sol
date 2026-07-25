@@ -4,7 +4,8 @@ pragma solidity 0.8.30;
 import { Context } from "@1inch/swap-vm/src/libs/VM.sol";
 import { AquaOpcodes } from "@1inch/swap-vm/src/opcodes/AquaOpcodes.sol";
 
-import { Passthrough } from "../instructions/Passthrough.sol";
+import { WorldIdGuard } from "../instructions/WorldIdGuard.sol";
+import { IWorldIDVerifier } from "../interfaces/IWorldIDVerifier.sol";
 
 // Opcode slots ScubaSwap claims in the SwapVM opcode space.
 //
@@ -23,17 +24,22 @@ uint256 constant SCUBA_OP_ONLY_HUMAN_TAKER = 0x27;
 uint256 constant SCUBA_OP_JUMP_IF_HUMAN = 0x33;
 
 /// @title ScubaOpcodes
-/// @notice The stock Aqua instruction set plus ScubaSwap's identity guards.
+/// @notice The stock Aqua instruction set plus ScubaSwap's World ID guards.
 /// @dev Extension is additive by construction: we handle only our own opcodes
 /// and delegate everything else to `super`, so every stock opcode keeps its
 /// number, its arguments and its behaviour. Aqua and SwapVM are never modified.
-abstract contract ScubaOpcodes is AquaOpcodes, Passthrough {
-    constructor(address aqua) AquaOpcodes(aqua) { }
+abstract contract ScubaOpcodes is AquaOpcodes, WorldIdGuard {
+    constructor(address aqua, IWorldIDVerifier verifier, string memory action, uint64 rpId)
+        AquaOpcodes(aqua)
+        WorldIdGuard(verifier, action, rpId)
+    { }
 
     /// @inheritdoc AquaOpcodes
     function _runOpcode(Context memory ctx, uint256 opcode, bytes calldata args) internal virtual override {
         if (opcode == SCUBA_OP_ONLY_HUMAN_TAKER) {
-            Passthrough._noop(ctx, args);
+            WorldIdGuard._onlyHumanTaker(ctx, args);
+        } else if (opcode == SCUBA_OP_JUMP_IF_HUMAN) {
+            WorldIdGuard._jumpIfHumanTaker(ctx, args);
         } else {
             // Stock Aqua opcodes, untouched — including the UnknownOpcode revert.
             super._runOpcode(ctx, opcode, args);

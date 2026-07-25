@@ -152,9 +152,15 @@ vm.expectRevert(UnknownOpcode.selector);
 v.quote(order, amount, takerData);
 ```
 
+The same trap caught `vm.prank` later, in the guard suite: `vm.prank(human);
+router.asView().quote(...)` pranks `asView()`, so `quote()` runs as the test
+contract and the guard derives a `signalHash` for the wrong address. It surfaced
+as `ProofInvalid()` — a failure that looks like broken cryptography rather than a
+misplaced cheatcode. Any cheatcode that binds to "the next call" is affected.
+
 A `view`-declared `quote` would have removed the need for `asView()` entirely
 (see F-03); the accessor exists only to paper over `quote` not being `view`, and
-this is the second bug that stems from it.
+this is now the third bug traceable to it.
 
 ## World ID
 
@@ -292,9 +298,17 @@ was already in the past — by 314s (production) and 189s (staging). The value i
 genuinely committed into the proof, so perturbing it by 1 reverts
 `ProofInvalid()`; it is simply never compared to the current time.
 
+Validity is not unbounded, though — and the earlier draft of this entry claimed
+it was. There *is* a time limit, applied to the wrong thing: the proof's Merkle
+root ages out of the verifier's root history. Measured by warping a fork, the
+fixture verifies at `expiresAtMin + 60min` and fails at `+70min` with
+`InvalidMerkleRoot()`.
+
 So an integrator who maps the parameters exactly as documented — as we initially
-did — builds a gate that accepts a proof **forever**. The one thing v4 offers
-over v3 for anti-bot use is silently inert unless the integrating contract adds:
+did — builds a gate with roughly an **hour** of replay exposure, not infinity,
+but still one to two orders of magnitude beyond the proof's own stated lifetime.
+The one thing v4 offers over v3 for anti-bot use stays inert unless the
+integrating contract adds:
 
 ```solidity
 require(expiresAtMin >= block.timestamp, ProofExpired());
@@ -326,3 +340,45 @@ Compounding this: a real World App device emits **v4** payloads
 (`protocol_version: "4.0"`, `uint256[5]` proof), while the hosted simulator emits
 **v3** (`"3.0"`, `uint256[8]`). So the easy fixture source and the real device
 disagree on protocol *and* target different chains — see W-03.
+
+### W-08 — The docs' own example bricks any repeatable action
+`WorldIDVerifier`'s example contract stores nullifiers for sybil resistance:
+
+```solidity
+nullifierUsed[nullifier] = true;
+```
+
+and the integration guide states the rule plainly:
+
+> The same person verifying the same action always produces the same nullifier
+
+Both are correct. Together they are a trap. For a one-shot action — mint, claim,
+vote — spending the bare nullifier is exactly right. For a **repeatable** action
+like swapping, that same line permits **one swap per human, for all time**, and
+the second attempt fails with a "duplicate nullifier" error that reads like an
+attack rather than a design error.
+
+Nothing in the example flags that it is one-shot-only, and the failure appears
+only on a user's *second* interaction — long after the code looks correct.
+
+The per-request `nonce` is the way out: it is a public input, so
+`keccak256(nullifier, nonce)` identifies one specific proof rather than one
+person. ScubaSwap keys its spent set on that pair, which makes a proof
+single-use while leaving the human free to trade again with a fresh one.
+`test_humanOnly_sameHumanSwapsAgainWithFreshProof` pins the distinction: both
+proofs share a nullifier and differ only in nonce.
+
+### W-09 — A v4 fixture has a one-hour shelf life, which forces a pinned fork
+Every other fork in this repo runs at `latest`, because Aqua and the routers do
+not care what block they see. A v4 proof does: about an hour after it is
+produced its Merkle root leaves the verifier's root history, and it stops
+verifying anywhere (see W-06 for the measurement).
+
+A `latest`-block fork therefore produces a suite that passes for one hour after
+the fixture is captured and fails permanently thereafter — the worst possible
+failure shape, because it looks green when written and broken when reviewed.
+
+`WorldIdRealProof.t.sol` pins World Chain to the block whose timestamp sits
+inside the fixture's root window. Worth knowing before generating a fixture for
+a demo: it is not a build artefact you capture once, it is closer to a
+screenshot with a timestamp.

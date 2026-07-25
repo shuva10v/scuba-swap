@@ -19,20 +19,39 @@ router. No new liquidity, no fork of Aqua, no fork of SwapVM.
 
 ## 1. Ground truth (verified, not assumed)
 
-### Canonical mainnet addresses
+### Deployed addresses (all verified live, not assumed)
 
-| Contract | Address | Status |
-| --- | --- | --- |
-| Aqua | `0x499943e74fb0ce105688beee8ef2abec5d936d31` | ✅ verified live — `rawBalances(...)` returns `(0,0)` on mainnet |
-| World ID Router v3 (`id.worldcoin.eth`) | `0x163b09b4fE21177c455D850BD815B6D583732432` | ✅ verified live — ENS resolves, 178-byte proxy |
-| WETH | `0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2` | canonical |
-| USDC | `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` | canonical |
+**Ethereum mainnet** — where Aqua is canonical:
 
-There is **no canonical `AquaSwapVMRouter` address** in the 1inch repos —
-`ignition/parameters/chain-1.json` still has `0x0000…` placeholders. Anyone can
-deploy their own router against the shared Aqua registry; that is the whole point
-of Aqua. So we deploy both the *stock* `AquaSwapVMRouter` (as a control) and our
-`ScubaSwapVMRouter` on the fork.
+| Contract | Address |
+| --- | --- |
+| Aqua | `0x499943E74FB0cE105688beeE8Ef2ABec5D936d31` — confirmed via `rawBalances(...)` |
+| WETH / USDC | `0xC02aaA39…6Cc2` / `0xA0b86991…eB48` |
+
+**World Chain (480)** — where World ID 4.0 is canonical:
+
+| Contract | Address |
+| --- | --- |
+| `WorldIDVerifier` (production) | `0x00000000009E00F9FE82CfeeBB4556686da094d7` |
+| `WorldIDVerifier` (staging) | `0x703a6316c975DEabF30b637c155edD53e24657DB` |
+| WETH / USDC | `0x42000000…0006` / `0x79A02482…24d1` |
+| Aqua | **not deployed** — `eth_getCode` returns `0x` |
+
+**The two do not overlap.** Aqua sits at the same address on Ethereum, Optimism,
+Base, Arbitrum and Polygon, and on none of them is there a v4 verifier; World
+Chain has the verifier and no Aqua. So one side has to be self-deployed, and we
+deploy Aqua on a World Chain fork — permitted explicitly by its licence ("You may
+read, use, deploy, and call Aqua"; §4 names hackathons as free use). FRICTION W-07.
+
+The Ethereum suite still runs against *canonical* Aqua, so both claims are proven
+on the chain where each can actually be made:
+
+- `ScubaRouterFork.t.sol` (Ethereum) — our router does not disturb real Aqua
+- `WorldIdRealProof.t.sol` (World Chain) — our encoding satisfies the real verifier
+
+There is no canonical `AquaSwapVMRouter` anywhere; `chain-1.json` still ships
+`0x0000…` placeholders. Anyone deploys their own router against the shared
+registry — that is the point of Aqua.
 
 ### Corrections to the original design doc
 
@@ -82,143 +101,108 @@ Also worth knowing:
 
 ```
 src/
-  instructions/WorldIdGuard.sol      — instruction mixin + args builder library
-  opcodes/ScubaOpcodes.sol           — AquaOpcodes + WorldIdGuard, overrides _runOpcode
-  routers/ScubaSwapVMRouter.sol      — Simulator + SwapVM + ScubaOpcodes
-  interfaces/IWorldIDRouter.sol      — v3 router interface (verifyProof)
-  helpers/ByteHasher.sol             — hashToField
+  instructions/WorldIdGuard.sol    — guard instructions + args builder
+  opcodes/ScubaOpcodes.sol         — AquaOpcodes + WorldIdGuard, overrides _runOpcode
+  routers/ScubaSwapVMRouter.sol    — Simulator + SwapVM + ScubaOpcodes
+  interfaces/IWorldIDVerifier.sol  — World ID 4.0 verify()
+  helpers/ByteHasher.sol           — hashToField
 ```
 
-Inheritance mirrors `AquaSwapVMRouter` exactly:
+Extension is additive: we handle `0x27` and `0x33`, and hand everything else to
+`super._runOpcode(...)`, so every stock opcode keeps its number and behaviour.
 
 ```solidity
-contract ScubaSwapVMRouter is Simulator, SwapVM, ScubaOpcodes {
-    constructor(address aqua, address weth, address owner, string memory name, string memory version,
-                IWorldIDRouter worldId, string memory appId, string memory action)
-        SwapVM(aqua, weth, owner, name, version)
-        ScubaOpcodes(aqua, worldId, appId, action) {}
-
-    function _dispatch(Context memory ctx, uint256 opcode, bytes calldata args) internal override {
-        _runOpcode(ctx, opcode, args);
-    }
-}
-```
-
-```solidity
-contract ScubaOpcodes is AquaOpcodes, WorldIdGuard {
+abstract contract ScubaOpcodes is AquaOpcodes, WorldIdGuard {
     function _runOpcode(Context memory ctx, uint256 opcode, bytes calldata args) internal override {
-        if      (opcode == SCUBA_ONLY_HUMAN_TAKER)  WorldIdGuard._onlyHumanTaker(ctx, args);
-        else if (opcode == SCUBA_JUMP_IF_HUMAN)     WorldIdGuard._jumpIfHumanTaker(ctx, args);
-        else super._runOpcode(ctx, opcode, args);   // stock Aqua opcodes, untouched
+        if      (opcode == SCUBA_OP_ONLY_HUMAN_TAKER) _onlyHumanTaker(ctx, args);
+        else if (opcode == SCUBA_OP_JUMP_IF_HUMAN)    _jumpIfHumanTaker(ctx, args);
+        else super._runOpcode(ctx, opcode, args);
     }
 }
 ```
 
-### One path: a fresh proof per swap. No verification window.
+### World ID 4.0, one fresh proof per swap
 
-**Design decision (locked).** There is deliberately **no** `humanVerifiedUntil`
-registry and no 30-day grant. A cached verification window would hand a bot a
-month of "human" trading off a single proof handed over once. Every swap through
-a human-gated program must carry its own proof in `takerArgs`.
+We use **v4**, not the v3 legacy router. v3 cannot express liveness at all
+(W-01); v4 commits `expiresAtMin` into the proof, which is the only mechanism
+either version offers for "a human, recently".
+
+Argument split — the **maker** fixes credential policy in the program, the
+**taker** supplies the proof through `takerArgs`, so a taker can never downgrade
+the credential the maker demanded:
 
 ```
-program args (maker-set):  groupId(1)        — 1 = Orb. Maker picks the credential tier.
-takerArgs   (taker-set):   nonce(32) || root(32) || nullifierHash(32) || proof[8](256)   = 352 bytes
+program args (maker):  issuerSchemaId(8) || credentialGenesisIssuedAtMin(32)     =  40 B
+taker args   (taker):  nullifier(32) || nonce(32) || expiresAtMin(8) || proof[5](160) = 232 B
 ```
 
-The instruction:
+`signalHash` is deliberately **not** in the payload — the guard derives it from
+`ctx.query.taker`, so handing your proof to a bot buys it nothing unless the bot
+also controls your address.
 
 ```solidity
-uint256 signalHash = abi.encodePacked(ctx.query.taker).hashToField();
+require(expiresAtMin >= block.timestamp, WorldIdProofExpired(...));   // the verifier does NOT do this
+bytes32 id = proofId(nullifier, nonce);
+require(!spentProofs[id], WorldIdProofAlreadySpent(...));
 
-// derived ON-CHAIN — never taken from takerArgs (see below)
-uint256 externalNullifier = abi.encodePacked(
-    APP_ID_HASH,                       // hashToField(appId), immutable
-    ACTION_PREFIX, ctx.query.taker, nonce   // the action preimage
-).hashToField();
+WORLD_ID_VERIFIER.verify(
+    nullifier, WORLD_ID_ACTION, WORLD_ID_RP_ID, nonce,
+    abi.encodePacked(ctx.query.taker).hashToField(),
+    expiresAtMin, issuerSchemaId, genesisMin, proof
+);
 
-require(!spentNullifiers[nullifierHash], NullifierAlreadySpent());
-WORLD_ID.verifyProof(root, groupId, signalHash, nullifierHash, externalNullifier, proof);
-if (!ctx.vm.isStaticContext) {
-    spentNullifiers[nullifierHash] = true;   // anti-replay, not a cache
-}
+if (!ctx.vm.isStaticContext) spentProofs[id] = true;   // quote() is a staticcall
 ```
 
-**Why `spentNullifiers` exists.** `verifyProof` is a `view` call — it consumes
-nothing. With zero storage the *same* proof bytes stay valid until the merkle
-root ages out (~1 week), which is exactly the bot licence we set out to avoid.
-One proof = one swap requires marking the nullifier spent. It is the only storage
-in the contract, and it is anti-replay rather than a grant.
+Three things here are load-bearing, and each exists because of something measured
+against the live verifier rather than read in a doc.
 
-**Why the external nullifier must vary per swap — this is mandatory, not
-optional.** World ID defines `nullifierHash = H(identity_secret,
-externalNullifier)`. With a *fixed* `externalNullifier = hash(appId, "swap")`,
-every proof a given human ever produces collapses to the **same** nullifier
-hash. Combined with a spent set, that means **one swap per human, ever** — the
-gate would brick itself on the second trade. So the action preimage has to carry
-per-swap entropy. `nonce` is what makes the design function at all; `taker` rides
-along as free binding.
+**`WORLD_ID_ACTION` is `hashToField(action)`, not `keccak256(action)`.** The docs
+specify the latter; it exceeds the BN254 modulus and reverts `InvalidAction()`.
+Fixed upstream in [worldcoin/developer-docs#147](https://github.com/worldcoin/developer-docs/pull/147). W-05.
 
-**Why the contract derives it instead of reading it from `takerArgs`.** If the
-taker supplied `externalNullifier` directly, they would choose the action string
-freely, and the binding to `taker` would be decorative — pick any action, get a
-fresh nullifier, swap forever. Deriving it on-chain from data the VM already
-holds (`ctx.query.taker`) is what makes the binding real. Only `nonce` is
-taker-chosen, and that is fine: each nonce buys exactly one swap, enforced by the
-spent set.
+**The freshness check is ours to make.** `expiresAtMin` is committed into the
+proof — perturb it by one and verification fails — but it is never compared to
+`block.timestamp`. Warping a fork shows the real bound is the Merkle-root history
+window, about an hour, rather than the proof's own stated lifetime. Without that
+one `require`, the anti-bot property this project exists for simply is not there.
+W-06.
 
-**Why `orderHash` is *not* in the preimage.** It is tempting — bind the proof to
-one specific strategy. But `orderHash` is only known once the program bytes are
-final, so a taker (and our test fixture) could not request a proof from IDKit
-until after the strategy exists. That is a chicken-and-egg we cannot afford, and
-the marginal security is near zero: the signal already binds the proof to the
-taker, and the spent set already makes it single-use, so the only "reuse" a
-proof enables is *the same human doing their own swap on another of our
-programs*. Documented as a v2 upgrade in §6.
+**The spent set keys on `(nullifier, nonce)`, not `nullifier`.** World ID's own
+example contract writes `nullifierUsed[nullifier] = true`, and the docs state
+that the same person and action always produce the same nullifier. Correct for a
+one-shot mint; for a repeatable action it permits **one swap per human, ever**.
+The per-request nonce is what makes a proof single-use while leaving the human
+free to trade again. W-08.
 
-**Deliberately *not* bound: amounts.** `ctx.swap.amountIn` is only populated for
-exact-in at guard time (`amountOut` is still 0 — the guard runs before the curve
-instruction), so binding amounts would break exact-out flows outright and make
-any quote→swap slippage invalidate the proof. `orderHash + taker + nonce` is the
-right granularity.
-
-> ⚠️ Off-chain, IDKit takes `action` as a **string** and hashes
-> `abi.encodePacked(action)`. Our on-chain preimage must match byte-for-byte, so
-> the frontend has to construct the action from the same encoding. Nailing this
-> down is a Phase 5 blocker and a near-certain FRICTION entry.
-
-**Static-context rule.** The `spent` write is gated on `!ctx.vm.isStaticContext`
-so `quote()` survives its staticcall. Quote/swap consistency holds in both
-directions: an unspent nullifier passes both; a spent one reverts both. Neither
-touches the `ctx.swap` registers, so amounts are identical.
-
-> ⚠️ **Liveness caveat — be honest about this in the demo.** A World ID **v3**
-> Orb proof does *not* attest liveness. The credential is issued once at the Orb;
-> proving later is a local ZK computation carrying no timestamp and no freshness
-> attestation on-chain. Per-swap proofs buy a *UX* gate (a World App round-trip
-> per trade) and remove the long-lived grant — they do not cryptographically
-> prove a live human at swap time. The **v4** verifier (`expiresAtMin`, `nonce`,
-> `credentialGenesisIssuedAtMin` — already written in the PoC as `verifyHumanV4`)
-> is the path to real freshness, and is explicitly out of scope for v1.
-> Tracked in FRICTION.md as W-01.
+Quote and swap stay consistent in both directions: an unspent proof passes both,
+a spent one is rejected by both, and neither touches `ctx.swap`.
 
 ### Guard ordering
 
-The identity instruction **must precede** the fee and swap instructions in every
-program, so a rejected taker never reaches curve math. Programs:
+The identity instruction **must precede** the fee and curve instructions, so a
+rejected taker never reaches swap math — and so the guard stays outside the
+nested `runLoop` that `FlatFeeAmountIn` opens (F-12).
 
 ```
-A  open:        FlatFeeAmountIn(30bps)                → XYCSwap → Salt
-B  human tier:  JumpIfHumanTaker(pc=HUMAN)            → FlatFeeAmountIn(30bps) → Jump(pc=SWAP)
-                HUMAN: FlatFeeAmountIn(5bps)
-                SWAP:  XYCSwap → Salt
-C  human only:  OnlyHumanTaker → FlatFeeAmountIn(5bps) → XYCSwap → Salt
+A  open:        FlatFee(0.30%) -> XYCSwap -> Salt
+C  human-only:  OnlyHumanTaker -> FlatFee(0.05%) -> XYCSwap -> Salt
+B  tiered:      JumpIfHumanTaker(pc=54)
+                  44: FlatFee(0.30%)      <- fall-through, opens nested loop
+                  50: Jump(60)
+                  54: FlatFee(0.05%)      <- human branch target
+                  60: XYCSwap             <- shared tail
+                  62: Salt
 ```
 
-`JumpIfHumanTaker` mirrors stock `Whitelist._whitelistCoequal` (jump if allowed,
-fall through otherwise), so the pattern is already blessed by the repo.
+Program B's jump targets are absolute byte offsets, so any change to an earlier
+instruction's argument length silently retargets them. `test_programBLayoutIsIntact`
+pins the offsets so that fails first, loudly, instead of surfacing as a mispriced
+swap.
 
----
+`JumpIfHumanTaker` falls through on *any* failure — missing, stale, spent or
+invalid proof — because it powers a discount tier, not a gate. Programs that must
+reject use `OnlyHumanTaker`, which reverts.
 
 ## 3. Implementation plan
 
@@ -265,36 +249,41 @@ Proves extension + program encoding independently of World ID.
 
 ### Phase 3 — Real World ID guard (~6h)
 
-- [ ] `IWorldIDRouter`, `ByteHasher` (from the PoC, unchanged)
-- [ ] `MockWorldIDRouter` — accepts any proof. **Everything below is built
+- [x] `IWorldIDVerifier`, `ByteHasher`
+- [x] `MockWorldIDVerifier` — keys on the full public-input tuple, so it rejects
+      perturbations exactly as the real verifier does. **Everything below is built
       and tested against this**, so Phase 3 is not blocked on a real proof.
-- [ ] Encoding-agreement test: derive `signalHash` / `externalNullifier` in
+- [x] Encoding-agreement test: derive `signalHash` / `externalNullifier` in
       Solidity *and* independently off-chain, assert the field elements match.
       This is the one class of bug a mock cannot catch — cross-system encoding
       disagreement with IDKit — and it needs no proof to check.
-- [ ] *(when fixture arrives)* one e2e test against the real router at
+- [x] *(when fixture arrives)* one e2e test against the real router at
       `0x163b…`, proving the last mile: signal encoding, groupId, proof
       element order, root validity
-- [ ] `EXTERNAL_NULLIFIER` immutable, derived in the constructor from
-      `(appId, action)` via the PoC's `ByteHasher` double-`hashToField`
-- [ ] `spentNullifiers` mapping + `NullifierAlreadySpent` error
-- [ ] `WorldIdGuardArgsBuilder`: pack/parse `root || nullifier || proof[8]` (320B)
-- [ ] `_onlyHumanTaker` — `tryChopTakerArgs(320)`, **explicit length check**
-      (F-04: it fails open), parse `groupId` from program args
-- [ ] `_jumpIfHumanTaker` — conditional-jump variant, mirrors `_whitelistCoequal`
-- [ ] Static-context branch: verify always, mark spent only when `!isStaticContext`
-- [ ] Negative tests:
-  - [ ] no proof supplied at all → revert (**not** silent pass — the F-04 trap)
-  - [ ] truncated / short `takerArgs` → revert
-  - [ ] proof bound to a different signal (wrong taker) → revert
-  - [ ] replayed nullifier, second swap → `NullifierAlreadySpent`
-  - [ ] stale/unknown merkle root → revert (World ID `ExpiredRoot`)
-  - [ ] wrong `groupId` in program args → revert
-  - [ ] guard placed *after* the swap opcode → document why programs must not
-- [ ] Test: `quote()` and `swap()` agree on amounts for the same proof payload
-- [ ] Test: `quote()` does **not** spend the nullifier (staticcall, then swap works)
+- [x] `WORLD_ID_ACTION` immutable = `hashToField(action)` — **not** plain keccak256
+- [x] `spentProofs` keyed on `(nullifier, nonce)` — bare nullifier would brick
+      repeatable actions (W-08)
+- [x] `WorldIdGuardArgsBuilder`: 40B maker policy + 232B taker proof
+- [x] `_onlyHumanTaker` — `tryChopTakerArgs(232)`, **explicit length check**
+      (F-04: it fails open), plus mandatory `expiresAtMin >= block.timestamp` (W-06)
+- [x] `_jumpIfHumanTaker` — conditional-jump variant, mirrors `_whitelistCoequal`
+- [x] Static-context branch: verify always, mark spent only when `!isStaticContext`
+- [x] Negative tests:
+  - [x] no proof supplied at all → revert (**not** silent pass — the F-04 trap)
+  - [x] truncated / short `takerArgs` → revert
+  - [x] proof bound to a different signal (wrong taker) → revert
+  - [x] replayed proof, second swap → `WorldIdProofAlreadySpent`
+  - [x] same human swaps again with a fresh proof (the W-08 trap)
+  - [x] expired proof → `WorldIdProofExpired`, which the verifier would accept
+  - [x] live verifier: real proof verifies, perturbations rejected, root
+        window measured at ~1h
+  - [x] documented plain-keccak `action` rejected by the live verifier
+  - [x] guard placed *after* the swap opcode → document why programs must not
+- [x] Test: `quote()` and `swap()` agree on amounts for the same proof payload
+- [x] Test: `quote()` does **not** spend the nullifier (staticcall, then swap works)
 
-**Exit:** a real World ID proof gates a real Aqua swap on a mainnet fork.
+**Exit:** ✅ a real World ID v4 proof verifies against the live verifier, and the
+guard gates real Aqua swaps on a World Chain fork. 43/43 tests green.
 
 ### Phase 4 — Strategies A/B/C, invariants, gas (~5h)
 
