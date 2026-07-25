@@ -290,11 +290,48 @@ export function isActionAllowed(action) {
   return typeof action === "string" && action.startsWith(demo.worldIdActionPrefix);
 }
 
+/**
+ * The credentials this deployment can verify on-chain.
+ *
+ * `issuerSchemaId` is the dial: it is already maker policy in every guard program, so a
+ * passport tier needed no contract change. Both ids were probed against the live verifier —
+ * 1 and 9303 are registered. 9303 is ICAO 9303, the passport standard.
+ *
+ * `tank` (jurisdiction) is absent deliberately. Nationality and age are `identityCheck`
+ * *attributes*, and `verify()` has no attribute parameter, so they are attested only in
+ * off-chain JSON — the same gap as the presence bit in W-04. A contract can require
+ * "holds a passport"; it cannot require "is over 18".
+ */
+export const CREDENTIALS = {
+  wetsuit: {
+    key: "wetsuit",
+    gear: "Wetsuit",
+    idkit: "proof_of_human",
+    schemaId: 1,
+    attests: "World ID · personhood",
+  },
+  mask: {
+    key: "mask",
+    gear: "Mask",
+    idkit: "passport",
+    schemaId: 9303,
+    attests: "Passport · document",
+  },
+};
+
 /** Band presentation, shared across environments — only the programs differ. */
 const BAND_META = {
-  surface: { key: "open", label: "Surface", depth: "0 m", feeLabel: "0.30%" },
-  human: { key: "tiered", label: "Human tier", depth: "−10 m", feeLabel: "0.05%" },
-  reef: { key: "humanOnly", label: "The reef", depth: "−30 m", feeLabel: "0.05%" },
+  surface: { key: "open", label: "Surface", depth: "0 m", feeLabel: "0.30%", needs: [] },
+  human: { key: "tiered", label: "Human tier", depth: "−10 m", feeLabel: "0.05%", needs: ["wetsuit"] },
+  reef: {
+    key: "both",
+    label: "The reef",
+    depth: "−30 m",
+    feeLabel: "0.01%",
+    // Program D is two guard instructions, so the taker concatenates two proof payloads in
+    // this order — it must match the order the guards appear in the shipped program.
+    needs: ["wetsuit", "mask"],
+  },
 };
 
 /**
@@ -307,8 +344,25 @@ const BAND_META = {
 export function programsFor(environment) {
   const env = ENVIRONMENTS[environment] ?? ENVIRONMENTS[DEFAULT_ENVIRONMENT];
   return Object.fromEntries(
-    Object.entries(BAND_META).map(([band, meta]) => [band, { ...env.programs[meta.key], ...meta }]),
+    Object.entries(BAND_META)
+      // A deployment predating program D has no `both`; drop the band rather than render one
+      // that cannot quote.
+      .filter(([, meta]) => env.programs[meta.key])
+      .map(([band, meta]) => [band, { ...env.programs[meta.key], ...meta }]),
   );
+}
+
+/**
+ * The strict human-only program, used only to explain a silent fall-through.
+ *
+ * `JumpIfHumanTaker` cannot revert, so a rejected proof is indistinguishable from no proof.
+ * This program runs the same check under `OnlyHumanTaker`, which does revert, and its reason
+ * is the only way to say *why* the tiered band priced at the open fee. Not a band of its own
+ * — the reef is program D now.
+ */
+export function diagnosticProgram(environment) {
+  const env = ENVIRONMENTS[environment] ?? ENVIRONMENTS[DEFAULT_ENVIRONMENT];
+  return env.programs.humanOnly ?? null;
 }
 
 /** Router address for one environment. */

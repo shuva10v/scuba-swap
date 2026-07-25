@@ -14,7 +14,7 @@
 
 import { useEffect, useState } from "react";
 import { formatUnits, parseUnits } from "viem";
-import { DEMO, FAUCET, TOKENS, erc20Abi, publicClient, quote } from "../lib/chain";
+import { CREDENTIALS, DEMO, FAUCET, TOKENS, diagnosticProgram, erc20Abi, publicClient, quote } from "../lib/chain";
 import ClaimButton from "./ClaimButton";
 import Diver, { Crab } from "./Diver";
 
@@ -66,6 +66,8 @@ export default function DepthPanel({
   takerData,
   account,
   verified,
+  proofs,
+  environment,
   onSwap,
   busy,
   programs,
@@ -183,11 +185,6 @@ export default function DepthPanel({
   const surfaceOut = out("surface");
   const humanOut = out("human");
 
-  // The reef is reachable only if its program actually quotes. It is a human-only
-  // program, so on chain a wetsuit is enough — but if the guard refuses we say so
-  // rather than showing a number nobody can trade against.
-  const reefReachable = out("reef") !== undefined;
-
   /**
    * Detect the tiered guard falling through.
    *
@@ -196,12 +193,30 @@ export default function DepthPanel({
    * but it makes a rejected proof indistinguishable from no proof: the band simply
    * shows the surface number and says nothing.
    *
-   * Holding a proof and still pricing at the surface is exactly that case. The
-   * reef runs the same check under `OnlyHumanTaker`, which *does* revert, so its
-   * error is the reason the tiered band cannot report for itself.
+   * Holding a proof and still pricing at the surface is exactly that case. The reason comes
+   * from the strict human-only program, which runs the *same* single-credential check under
+   * `OnlyHumanTaker` and does revert.
+   *
+   * Deliberately not the reef's error any more: the reef is program D now and demands a
+   * passport too, so its revert would blame the missing mask for a wetsuit problem.
    */
   const fellThrough = verified && surfaceOut !== undefined && humanOut === surfaceOut;
-  const fallThroughReason = quotes.reef?.error;
+  const [fallThroughReason, setFallThroughReason] = useState(null);
+
+  useEffect(() => {
+    const diag = diagnosticProgram(environment);
+    if (!fellThrough || !amountIn || !diag) {
+      setFallThroughReason(null);
+      return;
+    }
+    let live = true;
+    quote({ router, program: diag, amountIn, takerData, account }).then((q) => {
+      if (live) setFallThroughReason(q.error ?? null);
+    });
+    return () => {
+      live = false;
+    };
+  }, [fellThrough, amountIn, takerData, account, router, environment]);
 
   const activeBand = BANDS.find((b) => b.key === tier);
   const activeQuote = quotes[tier];
@@ -485,14 +500,16 @@ export default function DepthPanel({
           {BANDS.map((band, i) => {
             const q = quotes[band.key];
             const isActive = tier === band.key;
-            // The human tier is locked without a wetsuit, and that is a correction
-            // rather than a restriction. `JumpIfHumanTaker` falls through for an
-            // unproven taker, so selecting this band with no proof routed through the
-            // tiered program at the *open* fee — the header said 0.05% and the chain
-            // charged 0.30%. Locking it makes the gate match the pricing.
-            const locked = band.key === "human" ? !verified : band.key === "reef" ? !reefReachable : false;
+            // Locked when the program's guards demand a credential the taker does not hold.
+            // For the human tier this is a correction rather than a restriction:
+            // `JumpIfHumanTaker` falls through for an unproven taker, so selecting it with no
+            // proof routed through the tiered program at the *open* fee — the header said
+            // 0.05% while the chain charged 0.30%.
+            const needs = programs[band.key]?.needs ?? [];
+            const missing = needs.filter((k) => !proofs?.[k]);
+            const locked = missing.length > 0;
             const selectable = !locked;
-            const missingGear = band.key === "human" ? ["Wetsuit"] : ["Mask", "Tank"];
+            const missingGear = missing.map((k) => CREDENTIALS[k]?.gear ?? k);
             const delta = q?.amountOut !== undefined && activeOut !== undefined ? q.amountOut - activeOut : null;
 
             return (
@@ -734,7 +751,8 @@ export default function DepthPanel({
                       gear they hold. */}
                   <div style={{ position: "absolute", right: 30, top: 40, pointerEvents: "none" }}>
                     {band.key === "surface" && <Crab size={78} />}
-                    {band.key === "human" && verified && <Diver wetsuit="on" width={100} />}
+                    {band.key === "human" && verified && !proofs?.mask && <Diver wetsuit="on" width={100} />}
+                    {band.key === "reef" && verified && proofs?.mask && <Diver wetsuit="on" mask="on" width={100} />}
                   </div>
 
                   {isActive && (

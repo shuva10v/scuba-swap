@@ -18,6 +18,7 @@ import EnvInfo from "./components/EnvInfo";
 import WalletMenu, { clearDisconnected, wasDisconnected } from "./components/WalletMenu";
 import {
   AVAILABLE_ENVIRONMENTS,
+  CREDENTIALS,
   DEFAULT_ENVIRONMENT,
   DEMO,
   ENVIRONMENTS,
@@ -108,7 +109,13 @@ function presenceRequiredFor(environment) {
 export default function App() {
   const [address, setAddress] = useState(null);
   const [amount, setAmount] = useState("1");
-  const [proof, setProof] = useState(null); // { args, nullifier, expiresAtMin }
+  // Proofs by credential key: { wetsuit?: {...}, mask?: {...} }.
+  //
+  // A map rather than one proof, because the reef demands two credentials and they can only
+  // be earned in two separate World App round trips — both credentials in a single request
+  // share a nullifier and a nonce, so the second guard would reject the first's spent entry.
+  const [proofs, setProofs] = useState({});
+  const proof = proofs.wetsuit ?? null; // the wetsuit is what "verified" means everywhere else
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [activePc, setActivePc] = useState(null);
@@ -122,6 +129,8 @@ export default function App() {
   // agree on the same string — deriving it three times would produce three
   // different timestamps.
   const [diveAction, setDiveAction] = useState(null);
+  // Which credential the current gear-up is for. One per round trip.
+  const [diveCredential, setDiveCredential] = useState(null);
   const [widgetOpen, setWidgetOpen] = useState(false);
   const [gearingUp, setGearingUp] = useState(false);
 
@@ -151,7 +160,7 @@ export default function App() {
    * the swap will revert — worth warning about, never worth hiding the proof over.
    */
   useEffect(() => {
-    if (!proof) return;
+    if (Object.keys(proofs).length === 0) return;
 
     const stale = () =>
       setError(
@@ -159,14 +168,17 @@ export default function App() {
           "ScubaSwap enforces freshness even though the verifier does not. Gear up again to dive.",
       );
 
-    const ms = proof.expiresAtMin * 1000 + FRESHNESS_WINDOW_MS - Date.now();
+    // Watch the earliest expiry across held proofs: the reef needs both fresh, so the first
+    // one to go stale is the one that matters.
+    const soonest = Math.min(...Object.values(proofs).map((p) => p.expiresAtMin * 1000));
+    const ms = soonest + FRESHNESS_WINDOW_MS - Date.now();
     if (ms <= 0) {
       stale();
       return;
     }
     const t = setTimeout(stale, ms);
     return () => clearTimeout(t);
-  }, [proof]);
+  }, [proofs]);
 
   /**
    * Restore an existing connection on mount, and follow the wallet afterwards.
@@ -202,9 +214,9 @@ export default function App() {
     const onAccounts = (accts) => {
       setAddress(accts?.length ? accts[0] : null);
       // A different account means a different signal, so any proof bound to the
-      // old address is worthless. Dropping it prevents showing a wetsuit the
+      // old address is worthless. Dropping them prevents showing gear the
       // guard would reject. (proofStore also checks this on restore.)
-      setProof(null);
+      setProofs({});
     };
     const onChain = () => {
       // Balances, quotes and the router address are all chain-scoped; a reload is
@@ -223,18 +235,28 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!address || proof) return;
+    if (!address) return;
     let cancelled = false;
-    proofStore.load({ address, windowMs: FRESHNESS_WINDOW_MS, environment, router }).then((restored) => {
-      if (!cancelled && restored) {
-        console.info("[proof] restored from storage");
-        setProof(restored);
+    Promise.all(
+      Object.keys(CREDENTIALS).map((credential) =>
+        proofStore
+          .load({ address, windowMs: FRESHNESS_WINDOW_MS, environment, router, credential })
+          .then((restored) => [credential, restored]),
+      ),
+    ).then((entries) => {
+      if (cancelled) return;
+      const restored = Object.fromEntries(entries.filter(([, v]) => v));
+      if (Object.keys(restored).length) {
+        console.info("[proof] restored from storage:", Object.keys(restored).join(", "));
+        setProofs((prev) => ({ ...restored, ...prev }));
       }
     });
     return () => {
       cancelled = true;
     };
-  }, [address, proof, environment, router]);
+    // Deliberately not keyed on `proofs`: re-running on every mint would refetch storage for a
+    // credential we just wrote, and the merge above already keeps live state authoritative.
+  }, [address, environment, router]);
 
   const connect = useCallback(async () => {
     setError(null);
@@ -288,7 +310,10 @@ export default function App() {
     }
   }, [proof]);
 
-  const programKey = tier;
+  // A stored tier can name a band this deployment does not have — "reef" persisted from a
+  // session against a config that predates program D. Fall back rather than dereferencing
+  // undefined all the way down to the dive.
+  const programKey = programs[tier] ? tier : Object.keys(programs)[0];
 
   const onFlip = useCallback(() => {
     const receiving = quotes[tier]?.amountOut;
@@ -325,9 +350,28 @@ export default function App() {
     return { out: money(activeOut), vsSurface };
   })();
   // Guarded programs need the proof in takerArgs; the surface program ignores it.
-  const takerData = buildTakerData({ isExactIn: true, isAToB: side.isAToB, instructionsArgs: proof?.args ?? "0x" });
+  /**
+   * Taker args for the selected program: the proof payloads its guards will consume,
+   * concatenated in the order the guards appear.
+   *
+   * Program D is two `OnlyHumanTaker` instructions, and `tryChopTakerArgs` advances a cursor —
+   * so the first guard reads the first payload and the second reads the next. Order is not
+   * cosmetic: swap them and each guard is handed a proof for the other's schema.
+   *
+   * A program whose credentials are not all held still gets whatever is held. That is
+   * deliberate for the tiered band, which prices at the open fee rather than reverting, and
+   * harmless for the reef, which reverts either way.
+   */
+  const instructionsArgs = (() => {
+    const needs = programs[programKey]?.needs ?? [];
+    const held = needs.map((k) => proofs[k]?.args).filter(Boolean);
+    if (held.length === 0) return "0x";
+    return `0x${held.map((h) => h.slice(2)).join("")}`;
+  })();
 
-  const gearUp = useCallback(async () => {
+  const takerData = buildTakerData({ isExactIn: true, isAToB: side.isAToB, instructionsArgs });
+
+  const gearUp = useCallback(async (credential) => {
     setError(null);
     if (!address) {
       setError("Connect a wallet first — the proof is bound to the address that swaps.");
@@ -340,8 +384,15 @@ export default function App() {
       );
       return;
     }
+    if (!CREDENTIALS[credential]) {
+      setError(`Unknown credential "${credential}".`);
+      return;
+    }
     setGearingUp(true);
     try {
+      setDiveCredential(credential);
+      // A fresh action per round trip. World ID issues one proof per (identity, rp, action),
+      // so the wetsuit and the mask each need their own — reusing one would be refused.
       const action = freshAction();
       setDiveAction(action);
       setRpContext(await fetchRpContext(action));
@@ -356,8 +407,9 @@ export default function App() {
     (result) => {
     setError(null);
     try {
-      const args = proofFromIdkitResult(result, diveAction);
-      const r = result.responses.find((x) => x.identifier === "proof_of_human");
+      const cred = CREDENTIALS[diveCredential];
+      const args = proofFromIdkitResult(result, diveAction, cred.idkit);
+      const r = result.responses.find((x) => x.identifier === cred.idkit);
       const expiresAtMin = Number(r.expires_at_min);
       console.info("[IDKit] parsed →", {
         takerArgsBytes: (args.length - 2) / 2,
@@ -366,9 +418,16 @@ export default function App() {
         validForSeconds: expiresAtMin - Math.floor(Date.now() / 1000),
         presence: result.user_presence_completed,
       });
-      const minted = { args, nullifier: r.nullifier, nonce: result.nonce, expiresAtMin, action: diveAction };
-      setProof(minted);
-      proofStore.save(minted, { address, environment, router });
+      const minted = {
+        args,
+        nullifier: r.nullifier,
+        nonce: result.nonce,
+        expiresAtMin,
+        action: diveAction,
+        credential: diveCredential,
+      };
+      setProofs((prev) => ({ ...prev, [diveCredential]: minted }));
+      proofStore.save(minted, { address, environment, router, credential: diveCredential });
       setGearingUp(false);
       setWidgetOpen(false);
     } catch (e) {
@@ -381,7 +440,7 @@ export default function App() {
     // diveAction must be a dependency: it changes per gear-up, and a stale closure
     // would encode the proof against the previous dive's action (or null on the
     // first attempt), which the guard would reject as not matching the prefix.
-    [address, diveAction, environment, router],
+    [address, diveAction, diveCredential, environment, router],
   );
 
   const dive = useCallback(async () => {
@@ -430,9 +489,15 @@ export default function App() {
       setActivePc(999); // all rows lit
       // The proof was consumed on-chain, so the wetsuit comes off. Reflecting
       // that immediately is more honest than leaving it on until it expires.
-      if (proof) {
-        setProof(null);
-        proofStore.clear(environment);
+      // Spend exactly what the program consumed, in program order. A surface swap spends
+      // nothing; the reef spends both.
+      for (const key of programs[programKey].needs) {
+        setProofs((prev) => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+        proofStore.clear(environment, key);
       }
     } catch (e) {
       const d = decodeRevert(e);
@@ -515,7 +580,7 @@ export default function App() {
                     // rather than demanding another liveness check — nothing about
                     // switching invalidates a proof for the tree it was minted in.
                     // The restore effect then loads whatever the new env has, if any.
-                    setProof(null);
+                    setProofs({});
                     setError(null);
                     setGas(null);
                     setActivePc(null);
@@ -577,7 +642,7 @@ export default function App() {
               setAddress(null);
               // A proof is bound to the address that swaps, so it cannot survive a
               // disconnect — in any environment, not just the active one.
-              setProof(null);
+              setProofs({});
               proofStore.clearAll();
               setError(null);
             }}
@@ -595,7 +660,7 @@ export default function App() {
       >
         <DiverPanel
           address={address}
-          proof={proof}
+          proofs={proofs}
           onGearUp={gearUp}
           gearingUp={gearingUp}
           error={error}
@@ -639,7 +704,9 @@ export default function App() {
                and make that check pass for as long as the request asked — turning the
                anti-bot window off from the client side. Leaving it unset yields the
                issuance-time value the window is designed around. */
-            constraints={CredentialRequest("proof_of_human", { signal: address ?? undefined })}
+            constraints={CredentialRequest(CREDENTIALS[diveCredential]?.idkit ?? "proof_of_human", {
+              signal: address ?? undefined,
+            })}
             open={widgetOpen}
             onOpenChange={(o) => {
               setWidgetOpen(o);
@@ -690,6 +757,8 @@ export default function App() {
           takerData={takerData}
           account={address ?? undefined}
           verified={Boolean(proof)}
+          proofs={proofs}
+          environment={environment}
           onSwap={dive}
           busy={busy}
           programs={programs}

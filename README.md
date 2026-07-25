@@ -12,11 +12,20 @@ personhood**, so one maker's liquidity can serve several markets at once:
 | **A — open** | — | anyone | 0.30% |
 | **B — human tier** | `0x33` `JumpIfHumanTaker` | anyone; humans get a discount | 0.30% / **0.05%** if verified |
 | **C — human-only** | `0x27` `OnlyHumanTaker` | verified humans only | 0.05% |
+| **D — the reef** | `0x27` **twice** | personhood **and** passport | **0.01%** |
 
 All three run against the same maker's `aqua.ship()`-ed balance, backed by tokens that
 never leave their wallet. No new liquidity, no fork of Aqua, no fork of SwapVM — the
 guard is a mixin on our own router, dispatched through `_runOpcode` with a `super`
 fallthrough.
+
+Program D needs no new opcode and no contract change. `tryChopTakerArgs` advances a cursor, so
+two `OnlyHumanTaker` instructions consume two proof payloads in sequence — and the credential
+type is *already* maker policy (`issuerSchemaId` in program args), so demanding a passport is a
+program change, not a Solidity one. Both schema ids were probed against the live verifier:
+`1` = proof of human, `9303` = passport (ICAO 9303). The two proofs must come from two separate
+World App requests, because both credentials in one request share a nullifier *and* a nonce, so
+the second guard would reject the first's spent entry.
 
 The two guards differ in one deliberate way. `OnlyHumanTaker` reverts; `JumpIfHumanTaker`
 **cannot**, because it powers a discount rather than a gate, so a missing, stale, spent or

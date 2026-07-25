@@ -157,8 +157,12 @@ export function buildProofArgs(response, action) {
  * different proof system (8 elements, Merkle root, external nullifier) verified
  * by a different contract. Passing one to our guard produces a confusing
  * on-chain revert rather than an obvious client-side error.
+ *
+ * `credential` selects which entry of `responses[]` to encode — `proof_of_human` or
+ * `passport`. The credential type itself never enters the payload: on-chain it is the
+ * maker's `issuerSchemaId` in program args, and a taker cannot choose it.
  */
-export function proofFromIdkitResult(result, action) {
+export function proofFromIdkitResult(result, action, credential = "proof_of_human") {
   if (result?.protocol_version !== "4.0") {
     throw new EncodingError(
       `expected protocol_version "4.0", got ${JSON.stringify(result?.protocol_version)}. ` +
@@ -166,10 +170,10 @@ export function proofFromIdkitResult(result, action) {
     );
   }
 
-  const response = result.responses?.find((r) => r.identifier === "proof_of_human");
+  const response = result.responses?.find((r) => r.identifier === credential);
   if (!response) {
     const seen = (result.responses ?? []).map((r) => r.identifier).join(", ") || "none";
-    throw new EncodingError(`no "proof_of_human" credential in the response (saw: ${seen})`);
+    throw new EncodingError(`no "${credential}" credential in the response (saw: ${seen})`);
   }
 
   // The top-level nonce is a public input; it is NOT inside the response entry.

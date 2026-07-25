@@ -15,12 +15,16 @@ import { useState } from "react";
 import Diver from "./Diver";
 
 const GEAR = [
-  { key: "wetsuit", label: "Wetsuit", attests: "World ID · personhood", depth: "−10 m" },
-  { key: "mask", label: "Mask", attests: "Age attestation", depth: "−30 m" },
-  { key: "tank", label: "Tank", attests: "Jurisdiction", depth: "−30 m" },
+  { key: "wetsuit", label: "Wetsuit", attests: "World ID · personhood", depth: "−10 m", earnable: true },
+  // Passport, not age. Age is an `identityCheck` *attribute* and `verify()` has no attribute
+  // parameter, so an age assertion lives only in off-chain JSON — the same gap as the presence
+  // bit (W-04). Passport *possession* is a registered credential (schema 9303) and is verified
+  // on chain, so that is what the mask attests.
+  { key: "mask", label: "Mask", attests: "Passport · document", depth: "−30 m", earnable: true },
+  { key: "tank", label: "Tank", attests: "Jurisdiction", depth: "−30 m", earnable: false },
 ];
 
-export default function DiverPanel({ address, proof, onGearUp, gearingUp, error }) {
+export default function DiverPanel({ address, proofs, onGearUp, gearingUp, error }) {
   // Open by default: the card matters the moment a proof lands.
   const [showCert, setShowCert] = useState(true);
 
@@ -33,15 +37,28 @@ export default function DiverPanel({ address, proof, onGearUp, gearingUp, error 
   // `locked` for when the attestations actually land.
   // Explicit rather than relying on the component default, so the intent is
   // readable here rather than needing a look at Diver's signature.
-  const avatarState = { wetsuit: proof ? "on" : "off", mask: "off", tank: "off" };
+  const held = (k) => Boolean(proofs?.[k]);
+  const avatarState = { wetsuit: held("wetsuit") ? "on" : "off", mask: held("mask") ? "on" : "off", tank: "off" };
 
   // What the checklist and certification card describe, which is a different
   // question from what the avatar wears.
-  const gearState = { wetsuit: proof ? "on" : "off", mask: "locked", tank: "locked" };
+  // Earnable gear is on or off; the tank has no on-chain credential to earn, so it stays
+  // locked rather than pretending to be one round trip away.
+  const gearState = {
+    wetsuit: held("wetsuit") ? "on" : "off",
+    mask: held("mask") ? "on" : "off",
+    tank: "locked",
+  };
 
-  const title = proof ? "Wetsuit on · human tier, −10 m" : "Unverified swimmer · surface only";
-  const blurb = proof
-    ? "Personhood proven. The proof is spent on your next dive — one proof, one swap."
+  const title = held("wetsuit")
+    ? held("mask")
+      ? "Fully geared · the reef, −30 m"
+      : "Wetsuit on · human tier, −10 m"
+    : "Unverified swimmer · surface only";
+  const blurb = held("wetsuit")
+    ? held("mask")
+      ? "Personhood and passport both proven. Each proof is spent on the dive — one dive, one set."
+      : "Personhood proven. Add the mask to reach the reef, or dive now at −10 m."
     : "Anyone can swim at the surface. Prove personhood to drop to −10 m and a lower fee.";
 
   return (
@@ -135,25 +152,41 @@ export default function DiverPanel({ address, proof, onGearUp, gearingUp, error 
         })}
       </div>
 
-      <button
-        onClick={onGearUp}
-        disabled={gearingUp || !address}
-        style={{
-          width: "100%",
-          background: proof ? "var(--paper)" : "var(--coral)",
-          color: proof ? "var(--abyss)" : "#fff",
-          border: proof ? "1px solid var(--edge)" : "none",
-          borderRadius: 14,
-          padding: 20,
-          fontFamily: "var(--display)",
-          fontWeight: 700,
-          fontSize: 17,
-          cursor: gearingUp || !address ? "not-allowed" : "pointer",
-          opacity: gearingUp || !address ? 0.5 : 1,
-        }}
-      >
-        {gearingUp ? "Waiting for World App…" : proof ? "Re-gear (new proof)" : "Gear up with World ID"}
-      </button>
+      {/* One button per credential, because one World App round trip yields one proof. Both
+          credentials in a single request would share a nullifier and a nonce, so the reef's
+          second guard would reject the first guard's spent entry — the two really do have to
+          be earned separately. */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {GEAR.filter((g) => g.earnable).map((g) => {
+          const on = held(g.key);
+          return (
+            <button
+              key={g.key}
+              onClick={() => onGearUp(g.key)}
+              disabled={gearingUp || !address}
+              style={{
+                width: "100%",
+                background: on ? "var(--paper)" : "var(--coral)",
+                color: on ? "var(--abyss)" : "#fff",
+                border: on ? "1px solid var(--edge)" : "none",
+                borderRadius: 14,
+                padding: 18,
+                fontFamily: "var(--display)",
+                fontWeight: 700,
+                fontSize: 16,
+                cursor: gearingUp || !address ? "not-allowed" : "pointer",
+                opacity: gearingUp || !address ? 0.5 : 1,
+              }}
+            >
+              {gearingUp
+                ? "Waiting for World App…"
+                : on
+                  ? `Re-gear ${g.label.toLowerCase()} (new proof)`
+                  : `Gear up: ${g.label.toLowerCase()} · ${g.attests.split(" · ")[0]}`}
+            </button>
+          );
+        })}
+      </div>
 
       {error && (
         <div className="mono" style={{ fontSize: 11.5, color: "var(--coral)", lineHeight: 1.5, background: "rgba(255,122,77,0.1)", padding: "10px 12px", borderRadius: 8 }}>
@@ -161,7 +194,15 @@ export default function DiverPanel({ address, proof, onGearUp, gearingUp, error 
         </div>
       )}
 
-      {proof && <CertCard address={address} proof={proof} gearState={gearState} open={showCert} onToggle={() => setShowCert((o) => !o)} />}
+      {held("wetsuit") && (
+        <CertCard
+          address={address}
+          proof={proofs.wetsuit}
+          gearState={gearState}
+          open={showCert}
+          onToggle={() => setShowCert((o) => !o)}
+        />
+      )}
     </section>
   );
 }

@@ -22,18 +22,21 @@ import { DEMO, isActionAllowed, publicClient, routerAbi } from "./chain";
 /**
  * One slot per environment.
  *
- * Scoped rather than global so switching environments does not destroy the proof you
- * already earned: production and staging each hold their own, and flipping back
- * restores the wetsuit instead of demanding another World App round-trip. That matters
+ * Scoped per environment *and* per credential. Per environment so switching does not destroy
+ * the proof you already earned; per credential because the reef needs two of them, earned in
+ * two separate World App round trips — both credentials in one request share a nullifier and
+ * a nonce, so they cannot be obtained together. That matters
  * because a proof is not cheap to replace — a fresh action means a fresh liveness
  * check — and nothing about switching *invalidates* the proof for the environment it
  * was minted against.
  */
 const KEY_PREFIX = "scubaswap:proof";
-const keyFor = (environment) => `${KEY_PREFIX}:${environment}`;
+const keyFor = (environment, credential) => `${KEY_PREFIX}:${environment}:${credential}`;
 
 /** Every slot, for the cases where the proofs really are all worthless. */
-const ALL_KEYS = ["production", "staging"].map(keyFor);
+const ALL_KEYS = ["production", "staging"].flatMap((e) =>
+  ["wetsuit", "mask"].map((c) => keyFor(e, c)),
+);
 
 /** `keccak256(abi.encode(nullifier, nonce))` — must match `WorldIdGuard.proofId`. */
 export function proofId(nullifier, nonce) {
@@ -42,10 +45,10 @@ export function proofId(nullifier, nonce) {
   );
 }
 
-export function save(proof, { address, environment, router }) {
+export function save(proof, { address, environment, router, credential }) {
   try {
     localStorage.setItem(
-      keyFor(environment),
+      keyFor(environment, credential),
       JSON.stringify({
         ...proof,
         address: address?.toLowerCase(),
@@ -53,6 +56,7 @@ export function save(proof, { address, environment, router }) {
         chainId: DEMO.chainId,
         environment,
         router,
+        credential,
       }),
     );
   } catch {
@@ -60,10 +64,10 @@ export function save(proof, { address, environment, router }) {
   }
 }
 
-/** Discard the proof for one environment. */
-export function clear(environment) {
+/** Discard one credential's proof in one environment. */
+export function clear(environment, credential) {
   try {
-    localStorage.removeItem(keyFor(environment));
+    localStorage.removeItem(keyFor(environment, credential));
   } catch {
     /* ignore */
   }
@@ -101,30 +105,30 @@ export function clearAll() {
  * @param {string} opts.address current taker
  * @param {number} opts.windowMs freshness window, mirroring PROOF_FRESHNESS_WINDOW
  */
-export async function load({ address, windowMs, environment, router }) {
+export async function load({ address, windowMs, environment, router, credential }) {
   let stored;
   try {
-    stored = JSON.parse(localStorage.getItem(keyFor(environment)) ?? "null");
+    stored = JSON.parse(localStorage.getItem(keyFor(environment, credential)) ?? "null");
   } catch {
     return null;
   }
   if (!stored?.args || !address) return null;
 
-  if (stored.address !== address.toLowerCase()) return discard("bound to a different address", environment);
+  if (stored.address !== address.toLowerCase()) return discard("bound to a different address", environment, credential);
   // A prefix check, not equality: every dive mints its own action, so the stored
   // one will never equal a freshly generated string. What must still hold is that
   // the router would accept it.
-  if (!isActionAllowed(stored.action)) return discard(`issued for action "${stored.action}"`, environment);
-  if (stored.chainId !== DEMO.chainId) return discard("issued on a different chain", environment);
+  if (!isActionAllowed(stored.action)) return discard(`issued for action "${stored.action}"`, environment, credential);
+  if (stored.chainId !== DEMO.chainId) return discard("issued on a different chain", environment, credential);
   // A staging proof is worthless on the production router and vice versa — separate
   // identity trees, and the verifier is immutable per router. Checking the router
   // alone would also catch this, but naming the environment makes the console line
   // say something a human can act on.
-  if (stored.environment !== environment) return discard(`issued against ${stored.environment}`, environment);
-  if (stored.router?.toLowerCase() !== router?.toLowerCase()) return discard("issued against another router", environment);
+  if (stored.environment !== environment) return discard(`issued against ${stored.environment}`, environment, credential);
+  if (stored.router?.toLowerCase() !== router?.toLowerCase()) return discard("issued against another router", environment, credential);
 
   if (stored.expiresAtMin * 1000 + windowMs < Date.now()) {
-    return discard("past the freshness window", environment);
+    return discard("past the freshness window", environment, credential);
   }
 
   // The router is the only authority on whether this proof is still usable: a
@@ -137,7 +141,7 @@ export async function load({ address, windowMs, environment, router }) {
       functionName: "spentProofs",
       args: [proofId(stored.nullifier, stored.nonce)],
     });
-    if (spent) return discard("already spent on this router", environment);
+    if (spent) return discard("already spent on this router", environment, credential);
   } catch {
     // Chain unreachable — restoring optimistically is better than forcing a
     // re-gear, since the dive itself would surface the truth anyway.
@@ -149,11 +153,12 @@ export async function load({ address, windowMs, environment, router }) {
     nonce: stored.nonce,
     expiresAtMin: stored.expiresAtMin,
     action: stored.action,
+    credential: stored.credential ?? credential,
   };
 }
 
-function discard(reason, environment) {
-  console.info(`[proof] discarded stored ${environment} proof — ${reason}`);
-  clear(environment);
+function discard(reason, environment, credential) {
+  console.info(`[proof] discarded stored ${environment}/${credential} proof — ${reason}`);
+  clear(environment, credential);
   return null;
 }

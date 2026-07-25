@@ -45,7 +45,15 @@ contract DeployDemo is Script {
 
     uint32 internal constant OPEN_FEE = 3_000_000; // 0.30%
     uint32 internal constant HUMAN_FEE = 500_000; //  0.05%
+    uint32 internal constant DEEP_FEE = 100_000; //   0.01%  (BPS = 1e9 — see F-11)
+
+    /// @dev Credential types, as `issuerSchemaId` values the verifier recognises. Both were
+    /// probed against the live staging verifier: 1 and 9303 are registered, nothing else in
+    /// the ranges tried. 9303 is ICAO 9303, the passport standard — the ids are meaningful
+    /// numbers, not a sequence, which is worth stating because assuming otherwise leads you
+    /// to conclude passport is unsupported.
     uint64 internal constant SCHEMA_PROOF_OF_HUMAN = 1;
+    uint64 internal constant SCHEMA_PASSPORT = 9303;
 
     // MakerTraits requires tokenA < tokenB numerically, and freshly deployed demo
     // tokens land at arbitrary addresses — so the caller sorts them and passes
@@ -93,14 +101,19 @@ contract DeployDemo is Script {
         ISwapVM.Order memory open = _order(maker, _openProgram(1));
         ISwapVM.Order memory tiered = _order(maker, _tieredProgram(2));
         ISwapVM.Order memory humanOnly = _order(maker, _humanOnlyProgram(3));
+        ISwapVM.Order memory both = _order(maker, _bothCredentialsProgram(4));
 
         bytes32 hOpen = _ship(aqua, address(router), open);
         bytes32 hTiered = _ship(aqua, address(router), tiered);
         bytes32 hHuman = _ship(aqua, address(router), humanOnly);
+        bytes32 hBoth = _ship(aqua, address(router), both);
 
         vm.stopBroadcast();
 
-        _write(address(aqua), address(router), address(verifier), actionPrefix, rpId, maker, open, tiered, humanOnly, hOpen, hTiered, hHuman);
+        _write(
+            address(aqua), address(router), address(verifier), actionPrefix, rpId, maker,
+            open, tiered, humanOnly, both, hOpen, hTiered, hHuman, hBoth
+        );
 
         console.log("Aqua    ", address(aqua));
         console.log("Router  ", address(router));
@@ -122,6 +135,37 @@ contract DeployDemo is Script {
             hex"70",
             uint8(4),
             HUMAN_FEE,
+            hex"5000",
+            hex"02",
+            uint8(32),
+            bytes32(salt)
+        );
+    }
+
+    /// @notice Program D — requires proof of personhood **and** a passport, for the best fee.
+    ///
+    /// @dev Two guard instructions, no new opcode. `tryChopTakerArgs` advances a cursor, so
+    /// the first guard consumes the first proof payload and the second consumes the next —
+    /// composition is already the mechanism SwapVM offers, and the credential type is
+    /// already maker policy, so requiring two credentials needs no contract change at all.
+    ///
+    /// The two proofs must come from two separate World App requests. Both credentials in a
+    /// single request share one nullifier *and* one nonce (measured on the live verifier), so
+    /// `proofId = keccak256(nullifier, nonce)` would be identical for both and the second
+    /// guard would reject its own predecessor's spent entry.
+    ///
+    /// Order matters: the taker concatenates payloads in the order the guards appear here.
+    function _bothCredentialsProgram(uint256 salt) internal pure returns (bytes memory) {
+        return abi.encodePacked(
+            uint8(SCUBA_OP_ONLY_HUMAN_TAKER),
+            uint8(WorldIdGuardArgsBuilder.POLICY_LENGTH),
+            WorldIdGuardArgsBuilder.buildPolicy(SCHEMA_PROOF_OF_HUMAN, 0),
+            uint8(SCUBA_OP_ONLY_HUMAN_TAKER),
+            uint8(WorldIdGuardArgsBuilder.POLICY_LENGTH),
+            WorldIdGuardArgsBuilder.buildPolicy(SCHEMA_PASSPORT, 0),
+            hex"70",
+            uint8(4),
+            DEEP_FEE,
             hex"5000",
             hex"02",
             uint8(32),
@@ -206,9 +250,11 @@ contract DeployDemo is Script {
         ISwapVM.Order memory open,
         ISwapVM.Order memory tiered,
         ISwapVM.Order memory humanOnly,
+        ISwapVM.Order memory both,
         bytes32 hOpen,
         bytes32 hTiered,
-        bytes32 hHuman
+        bytes32 hHuman,
+        bytes32 hBoth
     ) internal {
         // Built with the serializeX cheatcodes rather than string.concat so the
         // output is valid JSON by construction — an Order's `data` is arbitrary
@@ -216,7 +262,8 @@ contract DeployDemo is Script {
         string memory programs = "programs";
         vm.serializeString(programs, "open", _programJson("p_open", open, hOpen));
         vm.serializeString(programs, "tiered", _programJson("p_tiered", tiered, hTiered));
-        string memory programsJson = vm.serializeString(programs, "humanOnly", _programJson("p_human", humanOnly, hHuman));
+        vm.serializeString(programs, "humanOnly", _programJson("p_human", humanOnly, hHuman));
+        string memory programsJson = vm.serializeString(programs, "both", _programJson("p_both", both, hBoth));
 
         string memory root = "root";
         vm.serializeUint(root, "chainId", block.chainid);

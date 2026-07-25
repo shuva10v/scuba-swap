@@ -43,9 +43,11 @@ for (const [name, p] of Object.entries(programs)) {
     if (received <= 0) throw new Error("zero output");
     console.log(`  ${env ? "  " : ""}${name.padEnd(10)} 1 WETH -> ${received.toFixed(2).padStart(12)} USDC`);
   } catch (e) {
-    // humanOnly MUST reject a proofless quote — that is the feature, not a bug.
+    // The guarded programs MUST reject a proofless quote — that is the feature, not a bug.
+    // `both` demands two credentials, so it rejects for the same reason humanOnly does: the
+    // guard refuses to read an absent proof as a payload (F-04).
     const msg = (e.stderr ?? e.message ?? "").toString();
-    if (name === "humanOnly" && /WorldIdProofMissing|0x/.test(msg)) {
+    if ((name === "humanOnly" || name === "both") && /WorldIdProofMissing|0x/.test(msg)) {
       console.log(`  ${env ? "  " : ""}${name.padEnd(10)} correctly rejected a proofless quote`);
     } else {
       console.error(`  ${env ? "  " : ""}${name.padEnd(10)} FAILED: ${msg.slice(0, 200)}`);
