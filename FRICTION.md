@@ -685,13 +685,22 @@ an NFC passport in the user's World ID, the other attests a property and returns
 list them as separate rows in the credential table without noting that they collapse to one
 schema id on chain.
 
-The sharper problem is the signal. `identityCheck` takes `{ attributes, legacy_signal? }` —
-there is no `signal`, and unlike every other preset the documented examples pass none. Our
-guard derives `signalHash` from `ctx.query.taker` and hands it to `verify()`, so a proof that
-committed a different signal cannot verify. That fails **closed** — the guard always supplies
-its own hash, so the outcome is an unusable credential rather than a bypass — but it means an
-Identity Check attestation may not be usable as an on-chain gate bound to a specific address at
-all, which is the whole point of binding.
+The sharper problem is the signal, and it is now measured rather than suspected.
+`identityCheck` takes `{ attributes, legacy_signal? }` — there is no `signal`, and unlike every
+other preset the documented examples pass none. An Identity Check response comes back with **no
+`signal_hash` field at all**.
+
+Our guard derives `signalHash` from `ctx.query.taker` and hands it to `verify()`, so a proof
+that committed no signal can never verify. It fails **closed** — the guard always supplies its
+own hash, so the outcome is an unusable credential rather than a bypass — but the conclusion is
+flat: **an Identity Check attestation cannot be used as an on-chain gate bound to an address.**
+Which is the whole point of binding, and therefore of verifying in a swap at all.
+
+The workable form is `CredentialRequest("passport", { signal })`. It carries a signal, produces
+the same schema id, and verifies on chain. The price is that the identity must genuinely hold a
+verified NFC passport — so on staging the two credentials are not just different requests, they
+live in different simulator identities, and `credential_unavailable` is what you get for asking
+the wrong one.
 
 Identity Check is also in preview ("contact us"), so its availability is per-app.
 

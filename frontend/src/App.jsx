@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatUnits, parseUnits } from "viem";
-import { CredentialRequest, IDKitRequestWidget, identityCheck, setDebug } from "@worldcoin/idkit";
+import { CredentialRequest, IDKitRequestWidget, setDebug } from "@worldcoin/idkit";
 
 import { BubblesMark } from "./components/Diver";
 import DiverPanel from "./components/DiverPanel";
@@ -717,13 +717,12 @@ export default function App() {
                and make that check pass for as long as the request asked — turning the
                anti-bot window off from the client side. Leaving it unset yields the
                issuance-time value the window is designed around. */
-            {...(CREDENTIALS[diveCredential]?.mode === "preset"
-              ? { preset: identityCheck({ attributes: CREDENTIALS[diveCredential].attributes }) }
-              : {
-                  constraints: CredentialRequest(CREDENTIALS[diveCredential]?.idkit ?? "proof_of_human", {
-                    signal: address ?? undefined,
-                  }),
-                })}
+            /* Always a constraint carrying a signal. The `identityCheck` preset cannot: it takes
+               no `signal` and its responses have no `signal_hash`, so the guard could never
+               verify what it returns. W-15. */
+            constraints={CredentialRequest(CREDENTIALS[diveCredential]?.idkit ?? "proof_of_human", {
+              signal: address ?? undefined,
+            })}
             open={widgetOpen}
             onOpenChange={(o) => {
               setWidgetOpen(o);
@@ -767,11 +766,11 @@ export default function App() {
                 setError(
                   `This identity holds no ${cred?.idkit ?? "such"} credential. ` +
                     (environment === "staging"
-                      ? `On staging each credential lives in its own simulator — the ${cred?.gear ?? "gear"} ` +
-                        `comes from ${cred?.simulator ?? "the matching simulator"}, and requesting it ` +
-                        "against the other one fails exactly like this."
+                      ? `Scan the ${cred?.gear ?? "gear"} QR with ${cred?.simulator ?? "the matching simulator"} — ` +
+                        "each credential lives in its own simulator identity, and requesting one against " +
+                        "the other fails exactly like this."
                       : "Your World App needs the credential before it can prove it — for the mask that " +
-                        "means a passport added to your World ID."),
+                        "means a verified NFC passport on your World ID."),
                 );
                 return;
               }

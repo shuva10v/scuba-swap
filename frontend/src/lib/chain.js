@@ -334,20 +334,19 @@ export const CREDENTIALS = {
     schemaId: 9303,
     attests: "Passport · document",
     /**
-     * Requested as an Identity Check attesting `document_type: passport`, not as the bare
-     * `passport` credential.
+     * Requested as the `passport` credential, carrying a signal — **not** as an Identity Check.
      *
-     * They are different credentials: `passport` means "holds a verified NFC passport", which
-     * a staging identity generally does not, and asking for it returns
-     * `credential_unavailable`. Identity Check attests a document-backed *property* instead,
-     * which is what the staging simulator can actually produce.
+     * Identity Check attesting `document_type: passport` looks like the natural fit and is a
+     * dead end here: it exposes no `signal`, and a response from it arrives with no
+     * `signal_hash` at all (measured, not inferred). Our guard derives `signalHash` from
+     * `ctx.query.taker` and hands it to `verify()`, so a proof that committed no signal can
+     * never verify — the credential is unusable as an address-bound gate. W-15.
      *
-     * `identityCheck` is a preset, not a constraint node, so this request goes through the
-     * `preset` prop — the two are mutually exclusive on the widget. Note it is in preview and
-     * exposes no `signal`; see `expectedSignalHash` for why that is the thing to watch.
+     * `passport` does carry a signal, and produces the same on-chain schema id (9303), so it
+     * is the form that works. The cost is that the identity must actually hold a verified NFC
+     * passport — which on staging means the identity-check simulator below, not the
+     * proof-of-human one.
      */
-    mode: "preset",
-    attributes: [{ type: "document_type", value: "passport" }],
     // The identity-check simulator, NOT the proof-of-human one. A passport request against
     // simulator.worldcoin.org fails with `credential_unavailable`, because that identity
     // simply does not hold the credential.
