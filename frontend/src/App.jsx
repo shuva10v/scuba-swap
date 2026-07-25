@@ -40,6 +40,13 @@ import { buildTakerData, proofFromIdkitResult } from "../../packages/sdk/takerAr
 
 const APP_ID = import.meta.env.VITE_WORLD_APP_ID ?? "";
 const REPO_URL = "https://github.com/shuva10v/scuba-swap";
+const EVENT_URL = "https://ethglobal.com/events/lisbon2026";
+// Served by ETHGlobal. 624×333 SVG, so the intrinsic ratio is fixed and width/height
+// below are set explicitly to reserve the space — a footer logo that arrives late and
+// reflows the row is worse than one that is 30ms slower.
+const EVENT_LOGO = "https://ethglobal.storage/events/lisbon2026/logo/default";
+const EVENT_LOGO_HEIGHT = 36;
+const EVENT_LOGO_WIDTH = Math.round((EVENT_LOGO_HEIGHT * 624) / 333);
 
 // "Verification unavailable / contact the website owner" is World App refusing the
 // REQUEST rather than the proof, and the response payload is encrypted to the
@@ -496,8 +503,8 @@ export default function App() {
             </div>
           )}
 
-          {/* Inline SVG rather than an icon font or a hosted image: the page is
-              served under a strict CSP and everything has to be self-contained. */}
+          {/* Inline SVG rather than an icon font or a hosted image — one fewer request
+              for a 300-byte glyph, and it inherits currentColor. */}
           <a
             href={REPO_URL}
             target="_blank"
@@ -669,25 +676,22 @@ export default function App() {
           flexWrap: "wrap",
         }}
       >
+        {/* The real event logo replaces the placeholder mark. It is a wordmark, so the
+            separate "ETHGLOBAL" label the design carried next to it is dropped —
+            keeping both would say the name twice. */}
         <a
-          href="https://ethglobal.com/events/lisbon2026"
+          href={EVENT_URL}
           target="_blank"
           rel="noreferrer noopener"
-          style={{ display: "flex", alignItems: "center", gap: 12, textDecoration: "none", color: "var(--abyss)" }}
+          style={{ display: "flex", alignItems: "center", gap: 14, textDecoration: "none", color: "var(--abyss)" }}
         >
-          <span
-            style={{
-              width: 26,
-              height: 26,
-              background: "var(--abyss)",
-              transform: "rotate(45deg)",
-              borderRadius: 4,
-              display: "inline-block",
-            }}
+          <img
+            src={EVENT_LOGO}
+            alt="ETHGlobal Lisbon 2026"
+            width={EVENT_LOGO_WIDTH}
+            height={EVENT_LOGO_HEIGHT}
+            style={{ display: "block" }}
           />
-          <span className="mono" style={{ fontSize: 13, letterSpacing: ".1em" }}>
-            ETHGLOBAL
-          </span>
           <span style={{ fontSize: 15, color: "#4a626c" }}>Built during ETHGlobal Lisbon 2026</span>
         </a>
 
