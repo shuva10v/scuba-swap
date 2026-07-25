@@ -38,7 +38,32 @@ export class ScubaSwapStack extends Stack {
     // itself. Otherwise pass a pre-existing us-east-1 certificate ARN.
     const hostedZoneName = this.node.tryGetContext("hostedZoneName") || undefined;
     const certificateArn = this.node.tryGetContext("certificateArn") || undefined;
-    const allowedActions = this.node.tryGetContext("allowedActions") || "scubaswap-connect";
+
+    // Refuse to synthesise a domainless stack when a domain was clearly intended.
+    //
+    // This is a guard against a genuinely destructive default. The certificate and
+    // the Route53 alias records are both gated on `hostedZoneName`, so a deploy that
+    // passes only `domainName` — or that forgets the domain flags entirely while
+    // changing something unrelated — produces a perfectly valid template with no
+    // domain in it. CloudFormation then does as asked: deletes the alias records,
+    // drops the alternate domain names from the distribution, and tries to delete
+    // the certificate. The site goes dark, and nothing in the output says so,
+    // because from CDK's point of view no domain was requested.
+    //
+    // We hit exactly this while redeploying only to change ALLOWED_ACTIONS.
+    if (domainName && !hostedZoneName && !certificateArn) {
+      throw new Error(
+        `domainName=${domainName} was given without hostedZoneName or certificateArn. ` +
+          "Either would attach the domain; with neither, this deploy would DELETE the " +
+          "alias records and certificate and take the site offline. For a Route53 zone " +
+          `use: -c hostedZoneName=${domainName}`,
+      );
+    }
+    // Action *prefixes*, not exact actions. World ID issues at most one proof per
+    // (identity, rp, action), so each dive names "<prefix>-<timestamp>" and an
+    // exact-match allowlist would reject every real request. Still an allowlist:
+    // this endpoint signs with our RP identity, so keep prefixes specific.
+    const allowedActions = this.node.tryGetContext("allowedActions") || "scubaswap";
     const rpId = this.node.tryGetContext("rpId") || "";
 
     // ---------------------------------------------------------------- secret

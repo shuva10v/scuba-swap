@@ -67,18 +67,41 @@ npx cdk deploy \
   -c certificateArn=arn:aws:acm:us-east-1:…:certificate/…
 ```
 
-Then point an ALIAS/CNAME at the distribution domain. Both context values are
-required together — a domain without a matching certificate would fail at
-CloudFront, so the stack ignores a lone `domainName` rather than half-configuring.
+Then point an ALIAS/CNAME at the distribution domain.
+
+**Pass the domain context on every deploy, not just the first.** The certificate
+and the alias records exist only while `hostedZoneName` (or `certificateArn`) is
+present, so a later deploy that omits them — say, to change `allowedActions` —
+synthesises a stack with no domain and CloudFormation dutifully deletes the alias
+records and the certificate. The site goes dark with nothing in the output warning
+you. The stack now throws if `domainName` is passed alone, but it cannot detect a
+deploy that drops all three, so the habit is the real protection:
+
+```bash
+npx cdk deploy -c hostedZoneName=scubaswap.xyz -c allowedActions=scubaswap
+```
+
+Recovering is a redeploy with the context restored: the certificate is reissued and
+DNS-validated automatically, and the alias records come back. Expect a few minutes
+for issuance, and note ACM will refuse to delete the *old* certificate until
+CloudFront finishes releasing it — 15-40 minutes, during which CloudFormation
+retries and the stack sits in `UPDATE_COMPLETE_CLEANUP_IN_PROGRESS`.
 
 ## Configuration
 
+`allowedActions` holds *prefixes*, not exact actions. World ID issues at most one
+proof per `(identity, rp, action)`, so every dive names a fresh
+`<prefix>-<timestamp>`; an exact-match allowlist would reject every real request.
+It is still the control that stops this endpoint lending our RP identity to any
+caller, so keep prefixes specific — `""` or `"a"` would defeat it.
+
 | Context key | Default | Meaning |
 | --- | --- | --- |
-| `allowedActions` | `scubaswap-connect` | Comma-separated allowlist. The signer **fails closed** if this is empty. |
+| `allowedActions` | `scubaswap` | Comma-separated allowlist of action **prefixes**. The signer **fails closed** if this is empty. |
 | `rpId` | `rp_d8319d06a1241d73` | Echoed back as `rp_id` for convenience. |
-| `domainName` | — | Optional; needs `certificateArn` too. |
-| `certificateArn` | — | Must be an `us-east-1` certificate. |
+| `hostedZoneName` | — | **The usual way to attach a domain.** Route53 zone name; the stack issues a DNS-validated certificate and writes the apex/`www` alias records itself. |
+| `domainName` | `hostedZoneName` | Optional override when the site name differs from the zone name. Needs `hostedZoneName` *or* `certificateArn` — alone it is rejected. |
+| `certificateArn` | — | Alternative to `hostedZoneName` for a domain not in Route53. Must be an `us-east-1` certificate; you write the DNS records yourself. |
 
 ## What the template enforces
 
