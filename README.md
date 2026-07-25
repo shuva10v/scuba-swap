@@ -2,18 +2,65 @@
 
 > EthGlobal Lisbon hackathon project.
 
-A new SwapVM instruction that gates (and prices) a swap on a **World ID proof of
-personhood**, so that a single shipped Aqua liquidity balance can serve two
-different markets at once:
+Two new SwapVM instructions that gate — and price — a swap on a **World ID proof of
+personhood**, so one maker's liquidity can serve several markets at once:
 
-| Program | Who can take | Fee |
+| Program | Opcode | Who can take | Fee |
+| --- | --- | --- | --- |
+| **A — open** | — | anyone | 0.30% |
+| **B — human tier** | `0x33` `JumpIfHumanTaker` | anyone; humans get a discount | 0.30% / **0.05%** if verified |
+| **C — human-only** | `0x27` `OnlyHumanTaker` | verified humans only | 0.05% |
+
+All three run against the same maker's `aqua.ship()`-ed balance, backed by tokens that
+never leave their wallet. No new liquidity, no fork of Aqua, no fork of SwapVM — the
+guard is a mixin on our own router, dispatched through `_runOpcode` with a `super`
+fallthrough.
+
+The two guards differ in one deliberate way. `OnlyHumanTaker` reverts; `JumpIfHumanTaker`
+**cannot**, because it powers a discount rather than a gate, so a missing, stale, spent or
+invalid proof all just mean "pay the open price". That asymmetry is the whole design, and
+it is also the hardest thing to debug — which is why the UI detects the silent
+fall-through and names it.
+
+Verified end to end on World Chain mainnet: see [§0](#0-live).
+
+---
+
+## 0. Live
+
+**[scubaswap.xyz](https://scubaswap.xyz)** — deployed on **World Chain mainnet (480)**,
+with a router per World ID environment so both the real World App and the simulator can
+be demonstrated without a redeploy.
+
+| | Address |
+| --- | --- |
+| Router (production verifier) | [`0x19C9bBd1152d9EFf9eDDE167A532f57014775356`](https://worldscan.org/address/0x19C9bBd1152d9EFf9eDDE167A532f57014775356) |
+| Router (staging verifier) | [`0xBCA52a9eC487F82E8fc5af06f24e2fbEf97BCf3D`](https://worldscan.org/address/0xBCA52a9eC487F82E8fc5af06f24e2fbEf97BCf3D) |
+| Aqua (self-deployed) | [`0x89EaCa90b4e905BD033f8892c27a27C3e175B113`](https://worldscan.org/address/0x89EaCa90b4e905BD033f8892c27a27C3e175B113) |
+| `dWETH` / `dUSDC` | [`0x8C8F1D10C96c9C611c963160EDD5BD721F6BACFf`](https://worldscan.org/address/0x8C8F1D10C96c9C611c963160EDD5BD721F6BACFf) / [`0x09C1526a7CbE078378D1F79c5d218030A1C083Dc`](https://worldscan.org/address/0x09C1526a7CbE078378D1F79c5d218030A1C083Dc) |
+
+The traded pair is two freely-mintable demo tokens, not canonical WETH/USDC. Shipping
+liquidity means granting Aqua an unlimited allowance, and an allowance is only ever as
+dangerous as the token behind it — these are worth nothing, so a first live deployment
+risks nothing. The 18dp/6dp mismatch is kept deliberately (F-14, F-15).
+
+### The claim, measured on mainnet
+
+Two real swaps from the same non-maker account against the same router:
+
+| | [`0x08e8bda0…`](https://worldscan.org/tx/0x08e8bda02793e7e40c7e62289a177274616350e062c092cd8484d7bdd2ffeb70) | [`0x5f7eb3f9…`](https://worldscan.org/tx/0x5f7eb3f9d4a0ab2227e2e4aafda31ba19ee8ebc6fb36088bc71ef97d10d967da) |
 | --- | --- | --- |
-| **A — open** | anyone | 0.30% |
-| **B — HumanPrice tier** | anyone, humans get a discount | 0.30% / **0.05%** if verified |
-| **C — human-only** | verified humans only | 0.05% |
+| Program | open (0.30%) | tiered (`JumpIfHumanTaker`) |
+| Taker args | 22 B — traits only | 275 B — **proof attached** |
+| Gas | **114,721** | **514,451** |
 
-All three run against **the same** `aqua.ship()`-ed USDC/WETH balance on our own
-router. No new liquidity, no fork of Aqua, no fork of SwapVM.
+- **399,730 gas** is the on-chain Groth16 verification, within ~1% of the figure the
+  test suite predicted. It is the honest cost of the design, and the argument for the
+  tier split: the surface stays cheap for everyone.
+- The proven swap priced at **3,994.01** per `dWETH` against a **3,984.03** open quote —
+  the guard verified, the jump was taken, and the discount is real.
+- The 275 bytes are exactly the layout: proof (232) ‖ action length (1) ‖ action (20)
+  ‖ taker traits (22).
 
 ---
 
@@ -35,7 +82,7 @@ router. No new liquidity, no fork of Aqua, no fork of SwapVM.
 | `WorldIDVerifier` (production) | `0x00000000009E00F9FE82CfeeBB4556686da094d7` |
 | `WorldIDVerifier` (staging) | `0x703a6316c975DEabF30b637c155edD53e24657DB` |
 | WETH / USDC | `0x42000000…0006` / `0x79A02482…24d1` |
-| Aqua | **not deployed** — `eth_getCode` returns `0x` |
+| Aqua | **no canonical deployment** — `eth_getCode` returns `0x`. We deploy our own; see [§0](#0-live) |
 
 **The two do not overlap.** Aqua sits at the same address on Ethereum, Optimism,
 Base, Arbitrum and Polygon, and on none of them is there a v4 verifier; World
@@ -341,29 +388,65 @@ program; guard overhead measured at ~26k gas.
 - [x] **Live at `https://scubaswap.xyz/api/rp-signature`** — verified against the
       deployed endpoint: signs an allowlisted action, refuses a foreign one,
       `no-store` with `x-cache: Miss`, distinct nonces per call
-- [ ] Vite + React + wagmi/viem scaffold, config from `deployments/demo.json`
-- [ ] Depth panel wired to real `quote()` calls **before** any animation work
-- [ ] IDKit with `proofOfHuman()` and `allow_legacy_proofs: false`
-- [ ] Diver panel, dive computer, bot bounce
+- [x] Vite + React + viem scaffold, config from `deployments/demo.json`
+- [x] Depth panel wired to real `quote()` calls **before** any animation work
+- [x] IDKit v4 (`IDKitRequestWidget`, `constraints`, `allow_legacy_proofs: false`)
+- [x] Diver panel, gear checklist, inline dive-certification card
+- [x] Dive computer — the decoded shipped program, with the taken branch highlighted
+- [x] **Deployed to World Chain mainnet**, two routers (one verifier each) sharing one
+      Aqua and one token pair, with an environment toggle in the page header
+- [x] `script/deploy-worldchain.sh` — dry-run by default, reads every immutable back
+      from the chain after deploying, reuses existing tokens so a second router does not
+      orphan the first
+- [x] `script/deploy-frontend.sh` — refuses to publish a config pointing at a local
+      fork, or a bundle missing the app id; both refusals verified against the real stack
+- [x] **Live at [scubaswap.xyz](https://scubaswap.xyz)**
+
+Not in the original plan, and each one a consequence of something measured:
+
+- [x] **Prefix-scoped actions.** World ID issues one proof per `(identity, rp, action)`,
+      so a pinned action gave each human a single gear-up per deployment — after which
+      their device answered `nullifier_replayed` forever. The router commits to a prefix
+      and each dive names `<prefix>-<timestamp>`. W-11.
+- [x] **Selectable tier.** The tier used to follow the proof automatically, which meant
+      the two prices could never be compared. Tapping a band picks the program the dive
+      executes, so the fee difference is read off the chain rather than asserted.
+- [x] **Both directions.** `isAToB` is one bit of taker traits and the guard is
+      symmetric; only the UI had pinned it. Verified both ways on mainnet.
+- [x] Balances polled and batched through Multicall3; insufficient-balance guard
+- [x] A warning when the connected account is the maker — Aqua never moves the maker's
+      tokens, so a self-trade nets to zero and looks like a broken balance
 
 **IDKit correction:** the original sketch said `orbLegacy`, which is the **v3**
 preset. Our guard verifies **v4** (`uint256[5]`, `WorldIDVerifier.verify`), so a
-v3 proof is structurally unverifiable by it. `allow_legacy_proofs` must stay
-**false**, and the SDK hard-rejects any payload that is not `protocol_version
-4.0` with a `proof_of_human` credential rather than letting it fail on-chain.
+v3 proof is structurally unverifiable by it. `allow_legacy_proofs` stays **false**,
+and the SDK hard-rejects any payload that is not `protocol_version 4.0` with a
+`proof_of_human` credential rather than letting it fail on-chain.
 
-**Still open:** a proof bound to a taker address we specify, for a guard-level
-e2e test. Best generated right before the demo — a v4 proof stops verifying about
-an hour after capture (W-09).
+The request uses `constraints={CredentialRequest("proof_of_human", { signal })}` rather
+than the `proofOfHuman` preset — the explicit form, and the only one that *could* express
+`genesis_issued_at_min` or `expires_at_min`. Both are deliberately unset: the former is a
+public input taken from the maker's program args on chain, so a request-side value that
+did not match would fail every verification; the latter would let the client widen the
+guard's freshness window from the browser. W-12.
+
+**Resolved:** the guard-level end-to-end test is no longer a fixture problem — it is two
+mainnet transactions, above.
 
 ### Phase 6 — Stretch
 
-- [ ] Deploy `ScubaSwapVMRouter` to an OP-stack testnet
-- [ ] Nullifier rotation / unbinding
-- [ ] World ID v4 verifier path (`verifyHumanV4` from the PoC is already written)
+- [x] Deploy `ScubaSwapVMRouter` to an OP-stack chain — done, and to mainnet rather
+      than a testnet, because World ID 4.0 exists only on World Chain (W-07)
+- [ ] Migrate to **sessions**, the primitive actually designed for a repeatable action.
+      Not adopted yet for two reasons, both documented in W-14: a session request cannot
+      express an identity check, which rules out the attestation gear on the roadmap; and
+      whether a session proof verifies on chain is genuinely unclear, since the on-chain
+      page never mentions sessions while the protocol repo says they share the circuits.
+- [ ] Mask and tank — age and jurisdiction attestations, the `−30 m` reef tier
 
-Explicitly **out of scope for v1**: document/age/country attestations, selfie
-freshness, v4 verifier path.
+Explicitly **out of scope for v1**: document/age/country attestations and selfie
+freshness. The **v4 verifier path is not stretch — it is the only path this project ever
+used**; the v3 sketch in the original PoC was discarded in Phase 3.
 
 ---
 
@@ -373,25 +456,44 @@ freshness, v4 verifier path.
 | --- | --- |
 | Proof fixture's signal address ≠ our test taker address | Prank *as* the fixture address; use an EOA taker (`useTransferFromAndAquaPush`), not `MockTaker` |
 | One fixture proof, but invariants need many swaps | `MockWorldIDRouter` for the invariant suite; real router for e2e (see Phase 4) |
-| Merkle roots expire ~1 week | Fork at **latest** block; if the root is `latestRoot` it never expires on a frozen fork |
+| Merkle roots expire ~1 week | **Wrong by an order of magnitude — measured at ~1 hour.** A frozen fork can never verify a freshly minted proof at all, which is why this runs on mainnet. W-09 |
 | `via_ir` compile times kill iteration speed | Optional `[profile.fast]` with `via_ir = false` for non-linking tests |
 | Public RPC rate limits during fork tests | Foundry fork caching + a real RPC key if the user has one |
-| Groth16 verify ~250k gas **on every** human-gated swap | Inherent to the no-cache design. Measure it, report it honestly, and use it to justify the tier split: program A stays cheap for everyone |
-| v3 proofs don't attest liveness (W-01) | Out of scope for v1. Say so in the demo; point at the v4 path |
+| Groth16 verify ~250k gas **on every** human-gated swap | **Measured at 399,730 on mainnet** — 60% higher than estimated. Inherent to the no-cache design, reported honestly in the UI's gas panel, and the argument for the tier split: the surface stays cheap for everyone |
+| v3 proofs don't attest liveness (W-01) | Moot — v4 throughout. Liveness is *requested* via `require_user_presence`, but `user_presence_completed` is off-chain JSON only: v4's `verify()` has no presence parameter, so no contract can enforce it. Requested because it is the right signal to ask for, not because it is enforceable |
+| A rejected proof is indistinguishable from no proof | `JumpIfHumanTaker` cannot revert — it powers a discount tier. The UI detects the fall-through (holding a proof and still pricing at the surface) and names the reason using the reef's revert, which runs the same check under `OnlyHumanTaker` |
+| Tiers drift apart in price | `ship` keys a virtual balance per **order hash**, so each program has its own curve state off the maker's one real balance. A popular tier drains its own output reserve. Cross-tier deltas are only shown when a proof makes them a genuine fee comparison. F-16 |
 
 ---
 
-## 5. Blocked on — needed from you
+## 5. Resolved unknowns
 
-1. **The World ID proof fixture** (Phase 3 cannot start without it):
-   `root`, `nullifier_hash`, `proof` (as `uint256[8]`), the **signal address**
-   the proof was generated for, `app_id`, `action`, and `groupId` (Orb = 1).
-2. Confirm the signal encoding matches the PoC:
-   `abi.encodePacked(account).hashToField()`.
-3. A mainnet RPC URL if you have one (Alchemy/Infura); otherwise
-   `https://ethereum-rpc.publicnode.com` is verified working.
+Everything this plan was blocked on is answered, and each answer cost something worth
+recording:
 
----
+1. **The proof fixture.** A staging v4 proof is committed (`test/fixtures/worldid-v4.json`)
+   and verified against the live staging verifier. The production one is deliberately
+   *not* committed — a production nullifier is a persistent pseudonymous identifier.
+2. **Signal encoding.** `abi.encodePacked(account).hashToField()`, pinned against
+   externally produced vectors in `test/WorldIdEncoding.t.sol`. IDKit hex-decodes a
+   `0x`-prefixed signal to raw bytes, which is byte-for-byte what `encodePacked` produces.
+3. **The action mapping.** `hashToField(action)`, **not** `keccak256(action)` as the docs
+   said — the latter exceeds the BN254 modulus and reverts `InvalidAction()`. Fixed
+   upstream in [worldcoin/developer-docs#147](https://github.com/worldcoin/developer-docs/pull/147). W-05.
+4. **RPC.** The public World Chain endpoint works; the frontend records its RPC in the
+   deployment config so a mainnet build can never be read over a localhost URL, and reads
+   are batched through Multicall3 so polling does not invite a rate limit.
+
+Two facts the verifier taught us that no document states:
+
+- **It does not check expiry.** `expiresAtMin` is committed into the proof — perturb it
+  and verification fails — but never compared to `block.timestamp`. A proof verifies fine
+  well past it. The freshness bound is ours to enforce, and without it the anti-bot
+  property this project exists for is simply absent. W-06.
+- **The action is a circuit input; the rp is bound too.** Perturbing the action to a
+  different valid field element gives `ProofInvalid`, which is what makes it safe to let
+  the taker name it. No substituted `rpId` verifies either — though that test cannot
+  fully separate "bound into the proof" from "not registered on this verifier".
 
 ## 6. Rules of engagement
 
