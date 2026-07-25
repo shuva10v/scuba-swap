@@ -14,7 +14,7 @@
 
 import { useEffect, useState } from "react";
 import { formatUnits, parseUnits } from "viem";
-import { TOKENS, erc20Abi, publicClient, quote } from "../lib/chain";
+import { DEMO, TOKENS, erc20Abi, publicClient, quote } from "../lib/chain";
 import Diver, { Crab } from "./Diver";
 
 /** How often live quotes refresh. The header states this, so it has to be true. */
@@ -130,6 +130,21 @@ export default function DepthPanel({
    * you cannot afford.
    */
   const insufficient = amountIn !== null && sellBalance !== undefined && amountIn > sellBalance;
+
+  /**
+   * Are you trading against your own liquidity?
+   *
+   * Worth saying out loud, because the symptom is silent and looks like a bug: Aqua
+   * never moves the maker's tokens, so the taker's input is pushed *to* the maker and
+   * the output is pulled *from* the maker. When both are the same address, both
+   * transfers are self-transfers and the wallet balances net to zero. The swap really
+   * happened — Aqua's virtual balance shifted and the gas was spent — but nothing in
+   * the wallet moves, which reads as "the balance is a constant".
+   *
+   * The deployer is also the person demoing, so this is the account most likely to hit
+   * it.
+   */
+  const isMaker = Boolean(account) && account.toLowerCase() === DEMO.maker?.toLowerCase();
 
   // Quotes refresh on a timer as well as on input. The pool moves, so a figure
   // that was true a minute ago is not a live quote — and the header claims 4s.
@@ -392,6 +407,27 @@ export default function DepthPanel({
           </div>
         </div>
       </div>
+
+      {isMaker && (
+        <div
+          className="mono"
+          style={{
+            marginTop: 12,
+            fontSize: 12,
+            lineHeight: 1.55,
+            background: "rgba(244,98,58,0.12)",
+            border: "1px solid rgba(244,98,58,0.35)",
+            borderRadius: 10,
+            padding: "10px 12px",
+            color: "#8a3a1e",
+          }}
+        >
+          You are the maker of this liquidity. Aqua never moves the maker's tokens, so a
+          swap from this account transfers both sides to itself — the trade executes and
+          Aqua's virtual balance shifts, but these wallet balances will not change. Use a
+          second account to see them move.
+        </div>
+      )}
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "20px 2px 12px" }}>
         <span style={{ width: 9, height: 9, borderRadius: "50%", background: "var(--verified)" }} />
