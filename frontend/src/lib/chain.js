@@ -7,7 +7,7 @@
  * produces new addresses) needs no code change.
  */
 
-import { createPublicClient, createWalletClient, custom, http, defineChain } from "viem";
+import { createPublicClient, createWalletClient, custom, http, defineChain, keccak256 } from "viem";
 import demo from "../../../deployments/demo.json";
 
 export const DEMO = demo;
@@ -302,6 +302,21 @@ export function isActionAllowed(action) {
  * off-chain JSON — the same gap as the presence bit in W-04. A contract can require
  * "holds a passport"; it cannot require "is over 18".
  */
+/**
+ * `hashToField(abi.encodePacked(address))` — what the guard derives from `ctx.query.taker`
+ * and hands to the verifier as `signalHash`.
+ *
+ * Exported so the client can check whether a returned proof is actually bound to the taker.
+ * It matters for the mask: `identityCheck` exposes no `signal` parameter, so a proof from it
+ * may commit a different signal — in which case our guard can never verify it. That fails
+ * closed rather than open (we always pass our own derived hash), so the symptom is an
+ * unusable credential, not a bypass.
+ */
+export function expectedSignalHash(address) {
+  if (!address) return null;
+  return BigInt(keccak256(address)) >> 8n;
+}
+
 export const CREDENTIALS = {
   wetsuit: {
     key: "wetsuit",
@@ -309,6 +324,8 @@ export const CREDENTIALS = {
     idkit: "proof_of_human",
     schemaId: 1,
     attests: "World ID · personhood",
+    // On staging, credentials live in different simulators and nothing tells you which.
+    simulator: "https://simulator.worldcoin.org/",
   },
   mask: {
     key: "mask",
@@ -316,6 +333,25 @@ export const CREDENTIALS = {
     idkit: "passport",
     schemaId: 9303,
     attests: "Passport · document",
+    /**
+     * Requested as an Identity Check attesting `document_type: passport`, not as the bare
+     * `passport` credential.
+     *
+     * They are different credentials: `passport` means "holds a verified NFC passport", which
+     * a staging identity generally does not, and asking for it returns
+     * `credential_unavailable`. Identity Check attests a document-backed *property* instead,
+     * which is what the staging simulator can actually produce.
+     *
+     * `identityCheck` is a preset, not a constraint node, so this request goes through the
+     * `preset` prop — the two are mutually exclusive on the widget. Note it is in preview and
+     * exposes no `signal`; see `expectedSignalHash` for why that is the thing to watch.
+     */
+    mode: "preset",
+    attributes: [{ type: "document_type", value: "passport" }],
+    // The identity-check simulator, NOT the proof-of-human one. A passport request against
+    // simulator.worldcoin.org fails with `credential_unavailable`, because that identity
+    // simply does not hold the credential.
+    simulator: "https://simulator.orb.engineer/",
   },
 };
 

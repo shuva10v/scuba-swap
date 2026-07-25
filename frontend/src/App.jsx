@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatUnits, parseUnits } from "viem";
-import { CredentialRequest, IDKitRequestWidget, setDebug } from "@worldcoin/idkit";
+import { CredentialRequest, IDKitRequestWidget, identityCheck, setDebug } from "@worldcoin/idkit";
 
 import { BubblesMark } from "./components/Diver";
 import DiverPanel from "./components/DiverPanel";
@@ -19,6 +19,7 @@ import WalletMenu, { clearDisconnected, wasDisconnected } from "./components/Wal
 import {
   AVAILABLE_ENVIRONMENTS,
   CREDENTIALS,
+  expectedSignalHash,
   DEFAULT_ENVIRONMENT,
   DEMO,
   ENVIRONMENTS,
@@ -411,7 +412,19 @@ export default function App() {
       const args = proofFromIdkitResult(result, diveAction, cred.idkit);
       const r = result.responses.find((x) => x.identifier === cred.idkit);
       const expiresAtMin = Number(r.expires_at_min);
+      const expected = expectedSignalHash(address);
+      const bound = r.signal_hash !== undefined && BigInt(r.signal_hash) === expected;
+      if (!bound) {
+        // The guard always passes its own derived signalHash, so an unbound proof simply will
+        // not verify. Say so here rather than letting it fail as an opaque on-chain revert.
+        console.warn(
+          "[IDKit] signal NOT bound to this taker — the guard will reject this proof.",
+          { returned: r.signal_hash, expected: expected && `0x${expected.toString(16)}` },
+        );
+      }
       console.info("[IDKit] parsed →", {
+        credential: cred.idkit,
+        signalBoundToTaker: bound,
         takerArgsBytes: (args.length - 2) / 2,
         nullifier: `${r.nullifier.slice(0, 12)}…`,
         expiresAtMin,
@@ -704,9 +717,13 @@ export default function App() {
                and make that check pass for as long as the request asked — turning the
                anti-bot window off from the client side. Leaving it unset yields the
                issuance-time value the window is designed around. */
-            constraints={CredentialRequest(CREDENTIALS[diveCredential]?.idkit ?? "proof_of_human", {
-              signal: address ?? undefined,
-            })}
+            {...(CREDENTIALS[diveCredential]?.mode === "preset"
+              ? { preset: identityCheck({ attributes: CREDENTIALS[diveCredential].attributes }) }
+              : {
+                  constraints: CredentialRequest(CREDENTIALS[diveCredential]?.idkit ?? "proof_of_human", {
+                    signal: address ?? undefined,
+                  }),
+                })}
             open={widgetOpen}
             onOpenChange={(o) => {
               setWidgetOpen(o);
@@ -741,9 +758,27 @@ export default function App() {
                 return;
               }
 
+              // `credential_unavailable` means the identity has no such credential — which on
+              // staging is nearly always the wrong simulator rather than a broken request.
+              // Credentials live in different simulators and nothing names which, so the error
+              // is the right place to say it.
+              if (code === "credential_unavailable") {
+                const cred = CREDENTIALS[diveCredential];
+                setError(
+                  `This identity holds no ${cred?.idkit ?? "such"} credential. ` +
+                    (environment === "staging"
+                      ? `On staging each credential lives in its own simulator — the ${cred?.gear ?? "gear"} ` +
+                        `comes from ${cred?.simulator ?? "the matching simulator"}, and requesting it ` +
+                        "against the other one fails exactly like this."
+                      : "Your World App needs the credential before it can prove it — for the mask that " +
+                        "means a passport added to your World ID."),
+                );
+                return;
+              }
+
               setError(
                 `World ID error: ${code}. Full debug report logged to the console. ` +
-                  `Requested env=${environment}, ` +
+                  `Requested env=${environment}, credential=${CREDENTIALS[diveCredential]?.idkit ?? "?"}, ` +
                   `app_id=${APP_ID.slice(0, 12)}…, action=${diveAction}, ` +
                   `rp_id=${DEMO.worldIdRpId ?? "?"}`,
               );

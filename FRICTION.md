@@ -665,3 +665,35 @@ Two fixes, both small:
   presumably `session_nullifier[1]`, the generated action, but that is inference.
 - Give sessions the same constraint surface as requests, so choosing continuity does
   not mean giving up credential types.
+
+### W-15 — Two different credentials share one on-chain schema id, and only one can be bound to an address
+Requesting `CredentialRequest("passport", { signal })` against a staging identity fails with
+`credential_unavailable`. The reason is not the simulator and not the app: `passport` and
+Identity Check are **different credentials** that produce the *same* `issuerSchemaId` on chain.
+
+| Request | Means | Signal |
+| --- | --- | --- |
+| `CredentialRequest("passport")` | "holds a verified NFC passport" | ✅ `signal` |
+| `identityCheck({ attributes: [{ document_type: "passport" }] })` | "a document-backed property matches" | ❌ none |
+
+Both arrive as `issuer_schema_id: 9303`, so a contract cannot tell them apart — it verifies
+"a passport-schema proof" either way. Off-chain they are not interchangeable at all: one needs
+an NFC passport in the user's World ID, the other attests a property and returns
+`identity_attested`.
+
+`credential_unavailable` does not say which of the two you should have asked for, and the docs
+list them as separate rows in the credential table without noting that they collapse to one
+schema id on chain.
+
+The sharper problem is the signal. `identityCheck` takes `{ attributes, legacy_signal? }` —
+there is no `signal`, and unlike every other preset the documented examples pass none. Our
+guard derives `signalHash` from `ctx.query.taker` and hands it to `verify()`, so a proof that
+committed a different signal cannot verify. That fails **closed** — the guard always supplies
+its own hash, so the outcome is an unusable credential rather than a bypass — but it means an
+Identity Check attestation may not be usable as an on-chain gate bound to a specific address at
+all, which is the whole point of binding.
+
+Identity Check is also in preview ("contact us"), so its availability is per-app.
+
+Worth stating in the credential table which requests can carry a v4 signal, since for on-chain
+verification an unbindable credential is not a weaker option — it is no option.
