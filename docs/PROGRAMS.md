@@ -43,6 +43,7 @@ maker demanded.
 0x27 program args   issuerSchemaId(8) ‖ credentialGenesisIssuedAtMin(32)              =  40 B
 0x33 program args   jumpPC(2) ‖ issuerSchemaId(8) ‖ credentialGenesisIssuedAtMin(32)  =  42 B
 taker args          nullifier(32) ‖ nonce(32) ‖ expiresAtMin(8) ‖ proof[5](160)       = 232 B
+                 ‖  actionLen(1) ‖ action(actionLen)                            = 233 + len B
 ```
 
 `signalHash` is deliberately absent from the payload — the guard derives it from

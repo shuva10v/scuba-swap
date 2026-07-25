@@ -127,6 +127,55 @@ contract WorldIdRealProofTest is Test {
         f.issuerSchemaId = 2;
         vm.expectRevert(bytes4(0xc7eb504d)); // UnregisteredIssuerSchemaId()
         _verify(f);
+
+        // The action, reduced to a *valid* field element but the wrong one. Distinct
+        // from the plain-keccak case above, which reverts InvalidAction() on a range
+        // check without ever reaching the proof. This is what shows the action is a
+        // genuine circuit input, which is what makes it safe to let the taker name it.
+        f = fx;
+        f.action = bytes("world-demo-v2-not-really").hashToField();
+        vm.expectRevert(bytes4(0x7fcdd1f4)); // ProofInvalid()
+        _verify(f);
+    }
+
+    /// @notice No proof verifies under a substituted `rpId`.
+    ///
+    /// @dev The question this answers: what stops someone presenting a proof of
+    /// personhood obtained from some *other* World ID app?
+    ///
+    /// The structural answer is that `rpId` is a constructor immutable, so a taker
+    /// cannot choose it — our router only ever asks the verifier about our own rp.
+    /// This test covers the remaining step: that the verifier will not accept a proof
+    /// under an rp it was not minted for. Worth measuring rather than assuming,
+    /// because this codebase already found a field where "the contract passes it" and
+    /// "the verifier enforces it" diverge — `expiresAtMin`, asserted below (W-06).
+    ///
+    /// Both substitutions revert with `0xfbf20062(rpId)`, an rp-registration error
+    /// rather than `ProofInvalid()`. That is a real limit on what this test proves:
+    /// it establishes that no substituted rp verifies, but it does **not** separate
+    /// "the rp is a circuit input" from "that rp is not registered on this verifier".
+    /// Separating them needs two rps registered on the *same* verifier, and our
+    /// staging fixture gives us only one.
+    ///
+    /// The gap is narrow in practice. The action *is* a proven circuit input (see
+    /// `test_liveVerifierRejectsPerturbedInputs`), the nullifier is scoped per
+    /// (identity, rp, action) and is itself bound, and the signal is bound to the
+    /// taker address. So a cross-app proof would additionally have to come from an
+    /// app using an action under our prefix and let its holder set our taker address
+    /// as the signal.
+    function test_noSubstitutedRpIdVerifies() public {
+        // An unregistered rp.
+        Fixture memory f = fx;
+        f.rpId = fx.rpId ^ 1;
+        vm.expectRevert(abi.encodeWithSelector(bytes4(0xfbf20062), f.rpId));
+        _verify(f);
+
+        // ScubaSwap's own production rp (rp_d8319d06a1241d73) — a real rp, but not
+        // the one this staging fixture was minted for.
+        f = fx;
+        f.rpId = 15_578_405_237_850_119_539;
+        vm.expectRevert(abi.encodeWithSelector(bytes4(0xfbf20062), f.rpId));
+        _verify(f);
     }
 
     /// @notice The verifier accepts a proof that is past its own `expiresAtMin`.

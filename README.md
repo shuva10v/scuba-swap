@@ -134,6 +134,7 @@ the credential the maker demanded:
 ```
 program args (maker):  issuerSchemaId(8) || credentialGenesisIssuedAtMin(32)     =  40 B
 taker args   (taker):  nullifier(32) || nonce(32) || expiresAtMin(8) || proof[5](160) = 232 B
+                    || actionLen(1) || action(actionLen)                    = 233 + len B
 ```
 
 `signalHash` is deliberately **not** in the payload — the guard derives it from
@@ -145,8 +146,10 @@ require(expiresAtMin >= block.timestamp, WorldIdProofExpired(...));   // the ver
 bytes32 id = proofId(nullifier, nonce);
 require(!spentProofs[id], WorldIdProofAlreadySpent(...));
 
+require(_isActionAllowed(action), WorldIdActionNotAllowed());   // prefix, not equality
+
 WORLD_ID_VERIFIER.verify(
-    nullifier, WORLD_ID_ACTION, WORLD_ID_RP_ID, nonce,
+    nullifier, action.hashToField(), WORLD_ID_RP_ID, nonce,
     abi.encodePacked(ctx.query.taker).hashToField(),
     expiresAtMin, issuerSchemaId, genesisMin, proof
 );
@@ -154,10 +157,21 @@ WORLD_ID_VERIFIER.verify(
 if (!ctx.vm.isStaticContext) spentProofs[id] = true;   // quote() is a staticcall
 ```
 
-Three things here are load-bearing, and each exists because of something measured
+Four things here are load-bearing, and each exists because of something measured
 against the live verifier rather than read in a doc.
 
-**`WORLD_ID_ACTION` is `hashToField(action)`, not `keccak256(action)`.** The docs
+**The router commits to an action *prefix*, and the taker names the action.** This
+looks like a weakening and is the opposite. World ID issues at most one proof per
+`(identity, rp, action)`, and the cap is in the *issuer* — no contract can lift it.
+So a router pinning one exact action gives each human a single gear-up for the
+router's entire lifetime, after which their World App simply refuses to mint and
+only a redeploy helps. Committing to `scubaswap-*` instead lets every dive name its
+own action and mint a fresh proof, one liveness check each. The security boundary
+never was the action: `WORLD_ID_RP_ID` pins the app, `_signalHash(taker)` binds the
+proof to the address swapping, `spentProofs` makes it single-use, and `_isFresh`
+bounds its life. W-08, W-10.
+
+**`hashToField(action)`, not `keccak256(action)`.** The docs
 specify the latter; it exceeds the BN254 modulus and reverts `InvalidAction()`.
 Fixed upstream in [worldcoin/developer-docs#147](https://github.com/worldcoin/developer-docs/pull/147). W-05.
 
@@ -260,11 +274,13 @@ Proves extension + program encoding independently of World ID.
 - [x] *(when fixture arrives)* one e2e test against the real router at
       `0x163b…`, proving the last mile: signal encoding, groupId, proof
       element order, root validity
-- [x] `WORLD_ID_ACTION` immutable = `hashToField(action)` — **not** plain keccak256
+- [x] Action reduced with `hashToField`, **not** plain keccak256
+- [x] `WORLD_ID_ACTION_PREFIX_HASH` immutable — prefix-scoped so a human can dive
+      more than once (World ID caps issuance at one proof per action)
 - [x] `spentProofs` keyed on `(nullifier, nonce)` — bare nullifier would brick
       repeatable actions (W-08)
-- [x] `WorldIdGuardArgsBuilder`: 40B maker policy + 232B taker proof
-- [x] `_onlyHumanTaker` — `tryChopTakerArgs(232)`, **explicit length check**
+- [x] `WorldIdGuardArgsBuilder`: 40B maker policy + 233B taker proof head + action
+- [x] `_onlyHumanTaker` — `tryChopTakerArgs(233)` + action, **explicit length checks**
       (F-04: it fails open), plus mandatory `expiresAtMin >= block.timestamp` (W-06)
 - [x] `_jumpIfHumanTaker` — conditional-jump variant, mirrors `_whitelistCoequal`
 - [x] Static-context branch: verify always, mark spent only when `!isStaticContext`

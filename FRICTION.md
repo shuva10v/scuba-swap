@@ -182,6 +182,33 @@ config struct's comments hints that the defaults are decimals-specific, and the
 second failure mode in particular sends you looking for an overflow in your own
 instruction. Worth a note in `TESTING.md` next to the tolerance defaults.
 
+### F-15 — Addressing the pair by sort order makes "which token is WETH" a coin flip
+`MakerTraits` requires `tokenA < tokenB` numerically, and taker traits pick the
+direction as a single `isAToB` bit. So the *identity* of what you are selling is
+positional, and the position depends on nothing but the addresses the tokens
+happen to occupy.
+
+Against canonical tokens this is invisible: on World Chain WETH sorts before
+USDC, so `isAToB: true` means "sell WETH" and stays true forever. We hardcoded
+exactly that in three places — the deploy script's config output, the smoke test,
+and the frontend's taker-data builder — and every one of them was correct for
+months of fork testing.
+
+They all broke simultaneously the first time the pair was two freshly deployed
+demo tokens, because `CREATE` addresses are effectively random and the 6dp token
+sorted first. Nothing reverted. The deploy wrote `"weth": <the 6dp token>`, the
+smoke test sold 1e18 units of a 6dp token into a 4,000-unit pool, and the quote
+came back `999999995987963.88 USDC` — a number that is *obviously* wrong on a
+demo pair, and would have been entirely plausible had the decimals matched.
+
+The lesson is that sort position is not a role. A deployment has to record which
+token plays which part — we now read `decimals()` on both sides and emit
+`weth`/`usdc` plus `baseDecimals`/`quoteDecimals` independently of the ordering,
+then derive `isAToB` from that. `MakerTraits` can't offer this itself, but the
+asymmetry is worth flagging: the ordering constraint is checked loudly
+(`MakerTraitsTokensNotSorted`) while getting the *direction* wrong against a
+correctly sorted pair is silent, and prices a real swap.
+
 ## World ID
 
 ### W-01 — A v3 proof carries no liveness or freshness signal
@@ -446,3 +473,105 @@ Two consequences for an integrator:
 - A contract that pins the action as an immutable needs redeploying per action. The
   action wants to be an argument, with `rpId` kept immutable so proofs still have to
   originate from your RP.
+
+### W-11 — "One proof per action" makes a fixed on-chain action unusable
+The natural way to write this guard is the way every World ID template writes it:
+take the action string in the constructor, store `hashToField(action)`, compare
+against it forever. We did, and it is a dead end for any *repeatable* action.
+
+The issuance cap in W-10 is not per-proof, it is per `(identity, rp, action)` — and
+it lives in the issuer, so no contract can lift it. So the first swap by a given
+human consumes the only proof that router will ever accept from them. Their World
+App then answers `nullifier_replayed` forever. Nothing on-chain is wrong; there is
+simply no second proof to be had. The only fix within the fixed-action design is to
+redeploy the router, which is absurd for a per-dive operation.
+
+What actually works is committing to a *prefix* and letting the taker name the
+action:
+
+```solidity
+bytes32 public immutable WORLD_ID_ACTION_PREFIX_HASH;   // keccak256("scubaswap")
+uint256 public immutable WORLD_ID_ACTION_PREFIX_LENGTH;
+// taker args: ... || actionLen(1) || action  ->  "scubaswap-1769300000"
+```
+
+Each dive names a fresh action, mints a fresh proof, and costs one liveness check.
+Worth being precise about what that gives up, because "taker-supplied action" reads
+like a hole: the action was never the security boundary. `rpId` pins the app,
+the taker-derived `signalHash` binds the proof to the address swapping, the spent
+set makes each proof single-use, and the freshness window bounds its life. What the
+prefix does concede is that any *other* action under the same rp sharing the prefix
+is accepted — so the prefix has to be specific, and the check must anchor at the
+start or `evil-scubaswap` would pass.
+
+The same reasoning propagates off-chain: an RP-signing endpoint with an exact-match
+action allowlist rejects every real request while still passing its own tests. It
+has to allowlist prefixes too, which is easy to get wrong in the unsafe direction —
+a prefix of `""` turns the endpoint into an open oracle for your RP identity.
+
+None of this is discoverable from the docs, which only ever show one-shot actions
+(`verify-humanity`, `claim-airdrop`). A repeatable action is a different design
+problem and deserves a page.
+
+### W-12 — The client can widen `expires_at_min`, which quietly weakens an on-chain freshness check
+The explicit request form takes three constraints:
+
+```ts
+CredentialRequest("proof_of_human", { signal, genesis_issued_at_min, expires_at_min })
+```
+
+Two of them are not free choices for an integrator who also verifies on chain, and
+nothing in the API surface says so.
+
+`genesis_issued_at_min` is a **public input to `verify()`**, and on chain it comes from
+wherever the contract keeps its policy — for us, the maker's program args. Set it in
+the request without matching the shipped policy and every proof fails verification.
+The two values have to agree, but they are configured in completely different places
+by different parties.
+
+`expires_at_min` is the sharper one. Our guard's freshness rule is
+`expiresAtMin + 15 min >= block.timestamp` — necessary because the verifier ignores
+expiry entirely (W-06). But `expiresAtMin` is committed at *issuance* from what the
+request asked for, so a client that requests a credential valid for a year gets a
+proof whose `expiresAtMin` is a year out, and the check passes for a year. The
+integrator writes an anti-bot window; the client chooses its width.
+
+For us the damage is bounded — the spent set (W-08) makes each proof single-use, and
+one proof per action means stockpiling still costs one liveness check each — so the
+worst case is pre-minted proofs rather than one proof forever. But any design that
+relies on `expiresAtMin` for rate limiting rather than for freshness is relying on a
+client-supplied bound. The docs present all three options as equivalent conveniences.
+Ours are deliberately left unset.
+
+### W-13 — There are two staging simulators and nothing tells you which one you need
+Staging verification failed repeatedly with World App reporting only:
+
+```
+Something went wrong. We couldn't complete your request.
+```
+
+The bridge response is `{ iv, payload }`, AES-GCM encrypted to a key the client holds,
+so the network tab shows nothing usable. Ours decoded to 39 bytes of plaintext — a
+proof is kilobytes, so it was an error object, but *which* error is unrecoverable
+without the session key.
+
+The cause was the simulator. There are two, they serve different credential types, and
+they are not interchangeable:
+
+| | |
+| --- | --- |
+| `simulator.worldcoin.org` | proof of human — what a `proof_of_human` request needs |
+| `simulator.orb.engineer` | attestations / identity-check credentials |
+
+Sending a proof-of-human request to the attestation simulator fails exactly like a
+wrong app id, a wrong environment, an unregistered action, or a presence check the
+simulator cannot perform. All five produce the same opaque message, and we had already
+chased three of the others.
+
+Two things would have removed the whole detour: naming the simulator on the credential's
+own docs page next to the request example, and returning an unencrypted error class
+(not the reason — just "unsupported_credential" versus "invalid_app_id") so an
+integrator can tell which of five identical-looking failures they have.
+
+The app now names both simulators in its environment tooltip, because the failure is
+un-debuggable from the client and the only defence is knowing in advance.
