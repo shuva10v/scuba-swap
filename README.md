@@ -74,6 +74,47 @@ Two real swaps from the same non-maker account against the same router:
 
 ## 1. Architecture
 
+Three moving parts. The interesting one is the router; the other two exist because a
+World ID 4.0 proof cannot be produced by a contract or requested without a signed
+identity.
+
+**Custom Aqua router** — `src/`, Solidity, deployed on World Chain. A `SwapVM` router
+with two extra opcodes, `0x27 OnlyHumanTaker` and `0x33 JumpIfHumanTaker`, verifying a
+Groth16 proof against the live `WorldIDVerifier` *inside* the swap. Liquidity is
+`aqua.ship()`-ed against it and never leaves the maker's wallet. One router per World ID
+environment, because the verifier is a constructor immutable and the staging and
+production identity trees are separate. Aqua itself is untouched: the guard is a mixin,
+dispatched through `_runOpcode` with a `super` fallthrough so every stock opcode keeps its
+number.
+
+**Backend** — `backend/` and `infra/`, a single Lambda behind CloudFront. It does exactly
+one thing: sign the `rp_context` a v4 proof request requires. That signature *is* the app's
+identity, so the key lives in Secrets Manager and is never in the bundle — IDKit also
+exports `signRequest`, and calling it client-side would ship the key to every visitor. The
+endpoint allowlists action **prefixes** and fails closed if the allowlist is unset,
+because without one it is an oracle that lends our RP identity to anyone who asks.
+
+**Frontend** — `frontend/`, Vite + React + viem, same origin as the API so production
+needs no CORS. It quotes all three programs live, requests the proof through IDKit, and
+packs the taker payload with `packages/sdk/takerArgs.mjs` — the *same* encoder the
+contracts are tested against, so the byte layout cannot drift between them
+(`test/EncodingVectors.t.sol` asserts it byte-for-byte and in field order). Nothing on the
+page is simulated; if the chain is unreachable the bands say so rather than showing a
+plausible number.
+
+```
+                 IDKit / World App          WorldIDVerifier (World Chain)
+                        │                              ▲
+                        │ proof                        │ verify()
+                        ▼                              │
+  frontend ──── rp_context ───▶ backend        custom router ──── ship/pull/push ───▶ Aqua
+      │         (signed)        (Lambda)             ▲                                 │
+      └──────── swap(order, amount, takerArgs) ──────┘                    maker's wallet
+```
+
+Every integration pain point found along the way is logged in
+[FRICTION.md](./FRICTION.md) — 16 for Aqua/SwapVM, 14 for World ID.
+
 ```
 src/
   instructions/WorldIdGuard.sol    — guard instructions + args builder
@@ -380,23 +421,7 @@ used**; the v3 sketch in the original PoC was discarded in Phase 3.
 
 ---
 
-## 3. Risks
-
-| Risk | Mitigation |
-| --- | --- |
-| Proof fixture's signal address ≠ our test taker address | Prank *as* the fixture address; use an EOA taker (`useTransferFromAndAquaPush`), not `MockTaker` |
-| One fixture proof, but invariants need many swaps | `MockWorldIDRouter` for the invariant suite; real router for e2e (see Phase 4) |
-| Merkle roots expire ~1 week | **Wrong by an order of magnitude — measured at ~1 hour.** A frozen fork can never verify a freshly minted proof at all, which is why this runs on mainnet. W-09 |
-| `via_ir` compile times kill iteration speed | Optional `[profile.fast]` with `via_ir = false` for non-linking tests |
-| Public RPC rate limits during fork tests | Foundry fork caching + a real RPC key if the user has one |
-| Groth16 verify ~250k gas **on every** human-gated swap | **Measured at 399,730 on mainnet** — 60% higher than estimated. Inherent to the no-cache design, reported honestly in the UI's gas panel, and the argument for the tier split: the surface stays cheap for everyone |
-| v3 proofs don't attest liveness (W-01) | Moot — v4 throughout. Liveness is *requested* via `require_user_presence`, but `user_presence_completed` is off-chain JSON only: v4's `verify()` has no presence parameter, so no contract can enforce it. Requested because it is the right signal to ask for, not because it is enforceable |
-| A rejected proof is indistinguishable from no proof | `JumpIfHumanTaker` cannot revert — it powers a discount tier. The UI detects the fall-through (holding a proof and still pricing at the surface) and names the reason using the reef's revert, which runs the same check under `OnlyHumanTaker` |
-| Tiers drift apart in price | `ship` keys a virtual balance per **order hash**, so each program has its own curve state off the maker's one real balance. A popular tier drains its own output reserve. Cross-tier deltas are only shown when a proof makes them a genuine fee comparison. F-16 |
-
----
-
-## 4. Resolved unknowns
+## 3. Resolved unknowns
 
 Everything this plan was blocked on is answered, and each answer cost something worth
 recording:
@@ -424,12 +449,3 @@ Two facts the verifier taught us that no document states:
   different valid field element gives `ProofInvalid`, which is what makes it safe to let
   the taker name it. No substituted `rpId` verifies either — though that test cannot
   fully separate "bound into the proof" from "not registered on this verifier".
-
----
-
-## 5. Rules of engagement
-
-- Foundry. Git history must show incremental work.
-- Official contracts only. **Aqua is never modified.** All custom logic lives in
-  `ScubaSwapVMRouter` and its mixins.
-- Every World ID / SwapVM integration pain point goes in [FRICTION.md](./FRICTION.md).
