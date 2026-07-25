@@ -246,6 +246,29 @@ export function explorerAddress(address) {
 }
 
 /**
+ * The dWETH faucet, or null if this deployment has none.
+ *
+ * Front-ends the base token because that is what a visitor needs before they can trade at
+ * all — the quote side is reachable by swapping, so one faucet is enough.
+ */
+export const FAUCET = demo.faucet ?? null;
+
+export const faucetAbi = [
+  { type: "function", name: "claim", stateMutability: "nonpayable", inputs: [], outputs: [] },
+  { type: "function", name: "AMOUNT", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  {
+    type: "function",
+    name: "waitFor",
+    stateMutability: "view",
+    inputs: [{ type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  // Carries the timestamp the caller may next claim at, so a rejection can be rendered as
+  // a countdown without a second call.
+  { type: "error", name: "ClaimTooSoon", inputs: [{ type: "uint256" }] },
+];
+
+/**
  * A fresh action for one dive.
  *
  * World ID issues at most one proof per (identity, rp, action), so reusing a single

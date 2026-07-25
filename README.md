@@ -47,6 +47,12 @@ therefore has to be deployed, which Aqua's licence permits explicitly ("You may 
 deploy, and call Aqua"; §4 names hackathons as free use). W-07. Aqua itself is never
 modified — the guard is a mixin on our own router.
 
+A **faucet** hands out 1 `dWETH` per address per hour, so a visitor can try the guard
+without being sent to a block explorer first. Deliberately ungated: requiring a proof to
+get the tokens you need in order to test the proof would be a closed loop. The cooldown is
+a fairness guard rather than a supply limit — `DemoToken.mint` is permissionless by design,
+so anyone can bypass the faucet entirely, which is fine for a token that is worth nothing.
+
 The traded pair is two freely-mintable demo tokens, not canonical WETH/USDC. Shipping
 liquidity means granting Aqua an unlimited allowance, and an allowance is only ever as
 dangerous as the token behind it — these are worth nothing, so a first live deployment
@@ -371,6 +377,9 @@ program; guard overhead measured at ~26k gas.
       orphan the first
 - [x] `script/deploy-frontend.sh` — refuses to publish a config pointing at a local
       fork, or a bundle missing the app id; both refusals verified against the real stack
+- [x] `DemoFaucet` + claim button — 1 `dWETH` per address per hour, with the cooldown read
+      from the chain and counted down in the button so it says how long rather than just
+      refusing
 - [x] **Live at [scubaswap.xyz](https://scubaswap.xyz)**
 
 Not in the original plan, and each one a consequence of something measured:

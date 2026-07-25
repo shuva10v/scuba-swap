@@ -47,6 +47,7 @@ const SHARED = [
   "rpcUrl",
   "baseSymbol",
   "quoteSymbol",
+  "faucet",
 ];
 
 const inputs = pairs.map((pair) => {

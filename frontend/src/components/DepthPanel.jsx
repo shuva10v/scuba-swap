@@ -14,7 +14,8 @@
 
 import { useEffect, useState } from "react";
 import { formatUnits, parseUnits } from "viem";
-import { DEMO, TOKENS, erc20Abi, publicClient, quote } from "../lib/chain";
+import { DEMO, FAUCET, TOKENS, erc20Abi, publicClient, quote } from "../lib/chain";
+import ClaimButton from "./ClaimButton";
 import Diver, { Crab } from "./Diver";
 
 /** How often live quotes refresh. The header states this, so it has to be true. */
@@ -77,6 +78,7 @@ export default function DepthPanel({
 }) {
   const [quotes, setQuotes] = useState({});
   const [balances, setBalances] = useState({});
+  const [balanceNonce, setBalanceNonce] = useState(0);
 
   const amountIn = safeParse(amount, side.sell.decimals);
 
@@ -116,7 +118,7 @@ export default function DepthPanel({
       live = false;
       clearInterval(id);
     };
-  }, [account, busy]);
+  }, [account, busy, balanceNonce]);
 
   const balanceOf = (t) => balances[t.address.toLowerCase()];
   const sellBalance = balanceOf(side.sell);
@@ -275,6 +277,11 @@ export default function DepthPanel({
               >
                 MAX
               </button>
+            )}
+            {/* Only for the token the faucet fronts — offering to claim the quote side
+                would be a button that cannot work. */}
+            {FAUCET && side.sell.address.toLowerCase() === TOKENS.base.address.toLowerCase() && (
+              <ClaimButton account={account} token={side.sell} onClaimed={() => setBalanceNonce((n) => n + 1)} />
             )}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 16, marginTop: 4 }}>
