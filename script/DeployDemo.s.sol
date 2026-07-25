@@ -4,6 +4,7 @@ pragma solidity 0.8.30;
 import { Script } from "forge-std/Script.sol";
 import { console } from "forge-std/console.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import { Strings } from "@openzeppelin/contracts/utils/Strings.sol";
 
 import { ByteHasher } from "../src/helpers/ByteHasher.sol";
@@ -38,29 +39,37 @@ import { SCUBA_OP_ONLY_HUMAN_TAKER, SCUBA_OP_JUMP_IF_HUMAN } from "../src/opcode
 contract DeployDemo is Script {
     using ByteHasher for bytes;
 
+    /// @dev WETH is only needed for SwapVM's unwrap support, never for the pair.
     address internal constant WETH = 0x4200000000000000000000000000000000000006;
-    address internal constant USDC = 0x79A02482A880bCE3F13e09Da970dC34db4CD24d1;
     address internal constant WORLD_ID_V4_STAGING = 0x703a6316c975DEabF30b637c155edD53e24657DB;
 
     uint32 internal constant OPEN_FEE = 3_000_000; // 0.30%
     uint32 internal constant HUMAN_FEE = 500_000; //  0.05%
     uint64 internal constant SCHEMA_PROOF_OF_HUMAN = 1;
 
-    // tokenA < tokenB is required by MakerTraits; on World Chain WETH sorts first.
-    address internal constant TOKEN_A = WETH;
-    address internal constant TOKEN_B = USDC;
-
-    uint256 internal constant SHIP_WETH = 100e18;
-    uint256 internal constant SHIP_USDC = 400_000e6;
+    // MakerTraits requires tokenA < tokenB numerically, and freshly deployed demo
+    // tokens land at arbitrary addresses — so the caller sorts them and passes
+    // them in already ordered. Deriving the order here from a hardcoded pair was
+    // what produced MakerTraitsTokensNotSorted when the chain changed.
+    address internal tokenA;
+    address internal tokenB;
+    uint256 internal shipA;
+    uint256 internal shipB;
 
     function run() external {
         address maker = msg.sender;
+
+        tokenA = vm.envAddress("TOKEN_A");
+        tokenB = vm.envAddress("TOKEN_B");
+        shipA = vm.envUint("SHIP_A");
+        shipB = vm.envUint("SHIP_B");
+        require(tokenA < tokenB, "TOKEN_A must sort before TOKEN_B");
         IWorldIDVerifier verifier = IWorldIDVerifier(vm.envOr("WORLD_ID_VERIFIER", WORLD_ID_V4_STAGING));
-        string memory action = vm.envOr("WORLD_ID_ACTION", string("scubaswap-connect"));
+        string memory actionPrefix = vm.envOr("WORLD_ID_ACTION_PREFIX", string("scubaswap"));
         uint64 rpId = uint64(vm.envOr("WORLD_ID_RP_ID", uint256(15578405237850119539)));
 
-        require(IERC20(WETH).balanceOf(maker) >= SHIP_WETH, "maker has no WETH - run script/demo-up.sh first");
-        require(IERC20(USDC).balanceOf(maker) >= SHIP_USDC, "maker has no USDC - run script/demo-up.sh first");
+        require(IERC20(tokenA).balanceOf(maker) >= shipA, "maker balance too low for tokenA");
+        require(IERC20(tokenB).balanceOf(maker) >= shipB, "maker balance too low for tokenB");
 
         Aqua aqua = Aqua(vm.envAddress("AQUA_ADDRESS"));
         ScubaSwapVMRouter router = ScubaSwapVMRouter(payable(vm.envAddress("ROUTER_ADDRESS")));
@@ -69,13 +78,16 @@ contract DeployDemo is Script {
         // would surface much later as an unexplained revert in the frontend.
         require(address(aqua).code.length > 0, "AQUA_ADDRESS has no code");
         require(address(router).code.length > 0, "ROUTER_ADDRESS has no code");
-        require(router.WORLD_ID_ACTION() == bytes(action).hashToField(), "router action != WORLD_ID_ACTION");
+        require(
+            router.WORLD_ID_ACTION_PREFIX_HASH() == keccak256(bytes(actionPrefix)),
+            "router action prefix != WORLD_ID_ACTION_PREFIX"
+        );
         require(router.WORLD_ID_RP_ID() == rpId, "router rpId != WORLD_ID_RP_ID");
 
         vm.startBroadcast();
 
-        IERC20(WETH).approve(address(aqua), type(uint256).max);
-        IERC20(USDC).approve(address(aqua), type(uint256).max);
+        IERC20(tokenA).approve(address(aqua), type(uint256).max);
+        IERC20(tokenB).approve(address(aqua), type(uint256).max);
 
         // One salt each, fixed, so re-running the script is idempotent per chain.
         ISwapVM.Order memory open = _order(maker, _openProgram(1));
@@ -88,7 +100,7 @@ contract DeployDemo is Script {
 
         vm.stopBroadcast();
 
-        _write(address(aqua), address(router), address(verifier), action, rpId, maker, open, tiered, humanOnly, hOpen, hTiered, hHuman);
+        _write(address(aqua), address(router), address(verifier), actionPrefix, rpId, maker, open, tiered, humanOnly, hOpen, hTiered, hHuman);
 
         console.log("Aqua    ", address(aqua));
         console.log("Router  ", address(router));
@@ -141,13 +153,13 @@ contract DeployDemo is Script {
 
     // ===== helpers =====
 
-    function _order(address maker, bytes memory program) internal pure returns (ISwapVM.Order memory) {
+    function _order(address maker, bytes memory program) internal view returns (ISwapVM.Order memory) {
         return MakerTraitsLib.build(
             MakerTraitsLib.Args({
                 maker: maker,
                 receiver: address(0),
-                tokenA: TOKEN_A,
-                tokenB: TOKEN_B,
+                tokenA: tokenA,
+                tokenB: tokenB,
                 shouldUnwrapWeth: false,
                 useAquaInsteadOfSignature: true,
                 allowZeroAmountIn: false,
@@ -168,15 +180,27 @@ contract DeployDemo is Script {
         );
     }
 
+    /// @dev The pair is always one 18dp token against one 6dp token — the mismatch
+    /// is deliberate (FRICTION F-14). Returns `(18dp side, other side)`, and refuses
+    /// to guess if both sides carry the same decimals, since then the "which one is
+    /// WETH" question has no answer to read off-chain and a wrong guess is worse
+    /// than a failed deploy.
+    function _byDecimals() internal view returns (address base, address quote) {
+        uint8 dA = IERC20Metadata(tokenA).decimals();
+        uint8 dB = IERC20Metadata(tokenB).decimals();
+        require(dA != dB, "pair decimals are equal; cannot infer base/quote");
+        return dA > dB ? (tokenA, tokenB) : (tokenB, tokenA);
+    }
+
     function _ship(Aqua aqua, address router, ISwapVM.Order memory order) internal returns (bytes32) {
-        return aqua.ship(router, abi.encode(order), dynamic([TOKEN_A, TOKEN_B]), dynamic([SHIP_WETH, SHIP_USDC]));
+        return aqua.ship(router, abi.encode(order), dynamic([tokenA, tokenB]), dynamic([shipA, shipB]));
     }
 
     function _write(
         address aqua,
         address router,
         address verifier,
-        string memory action,
+        string memory actionPrefix,
         uint64 rpId,
         address maker,
         ISwapVM.Order memory open,
@@ -199,18 +223,44 @@ contract DeployDemo is Script {
         vm.serializeAddress(root, "aqua", aqua);
         vm.serializeAddress(root, "router", router);
         vm.serializeAddress(root, "worldIdVerifier", verifier);
-        vm.serializeString(root, "worldIdAction", action);
+        vm.serializeString(root, "worldIdActionPrefix", actionPrefix);
         // Serialised as a string, not a number: a uint64 rp_id exceeds
         // JavaScript's MAX_SAFE_INTEGER, and JSON.parse would round it. It is
         // displayed and compared in the frontend, so a silently wrong value is
         // worse than an inconvenient type.
         vm.serializeString(root, "worldIdRpId", Strings.toString(uint256(rpId)));
         vm.serializeAddress(root, "maker", maker);
-        vm.serializeAddress(root, "weth", WETH);
-        vm.serializeAddress(root, "usdc", USDC);
+
+        // The RPC this deployment lives on, recorded alongside it.
+        //
+        // The frontend used to default to localhost with the config supplied
+        // separately, so a mainnet config read over a localhost RPC was a two-line
+        // mistake that produced a page where nothing worked and nothing said why.
+        // chainId cannot disambiguate — an anvil fork of World Chain also reports 480.
+        vm.serializeString(root, "rpcUrl", vm.envOr("DEPLOYMENT_RPC_URL", string("")));
+        vm.serializeAddress(root, "tokenA", tokenA);
+        vm.serializeAddress(root, "tokenB", tokenB);
+
+        // `weth`/`usdc` are the *roles* — the 18dp side sold and the 6dp side
+        // received — and they are emitted independently of the A/B sort order.
+        //
+        // These used to be aliases for tokenA/tokenB, which was silently correct
+        // only as long as the pair sorted the way the hardcoded one did. Freshly
+        // deployed demo tokens land at arbitrary addresses, so the order is a coin
+        // flip: on the first live rehearsal the 6dp token sorted first and the
+        // config labelled it `weth`, which would have had the frontend sell 6dp
+        // dUSDC under a WETH label and quote 1e15 for it. Read the decimals and
+        // let the tokens answer for themselves.
+        (address base, address quote) = _byDecimals();
+        vm.serializeAddress(root, "weth", base);
+        vm.serializeAddress(root, "usdc", quote);
+        vm.serializeUint(root, "baseDecimals", IERC20Metadata(base).decimals());
+        vm.serializeUint(root, "quoteDecimals", IERC20Metadata(quote).decimals());
         string memory out = vm.serializeString(root, "programs", programsJson);
 
-        vm.writeJson(out, "./deployments/demo.json");
+        // Configurable so a live deployment does not overwrite the local demo's
+        // config, and so both can coexist on disk.
+        vm.writeJson(out, string.concat("./", vm.envOr("DEPLOYMENT_OUT", string("deployments/demo.json"))));
     }
 
     function _programJson(string memory key, ISwapVM.Order memory order, bytes32 hash)

@@ -7,35 +7,51 @@ import { execFileSync } from "node:child_process";
 import { buildTakerData } from "../packages/sdk/takerArgs.mjs";
 
 const rpc = process.argv[2] ?? "http://127.0.0.1:8545";
-const demo = JSON.parse(readFileSync("deployments/demo.json", "utf8"));
+const demo = JSON.parse(readFileSync(process.argv[3] ?? "deployments/demo.json", "utf8"));
 
 const SIG = "quote((address,uint256,bytes),uint256,bytes)(uint256,uint256,bytes32)";
-const ONE_WETH = 10n ** 18n;
 
-// WETH is tokenA on World Chain, so selling WETH for USDC is A->B.
-const takerData = buildTakerData({ isExactIn: true, isAToB: true });
+// Which side we sell is a property of the deployment, not a constant. Canonical
+// WETH happens to sort before USDC on World Chain, but freshly deployed demo
+// tokens land at arbitrary addresses — so read the roles the deploy recorded and
+// derive the direction, rather than assuming WETH is tokenA.
+const baseDecimals = demo.baseDecimals ?? 18;
+const quoteDecimals = demo.quoteDecimals ?? 6;
+const isAToB = demo.weth.toLowerCase() === demo.tokenA.toLowerCase();
+const ONE_BASE = 10n ** BigInt(baseDecimals);
+
+const takerData = buildTakerData({ isExactIn: true, isAToB });
+
+// One entry per (environment, program). The older flat config had a single router;
+// accept both shapes so an existing deployment on disk still smoke-tests.
+const deployments = demo.environments
+  ? Object.entries(demo.environments).map(([env, e]) => ({ env, router: e.router, programs: e.programs }))
+  : [{ env: "", router: demo.router, programs: demo.programs }];
 
 let failures = 0;
-for (const [name, p] of Object.entries(demo.programs)) {
+for (const { env, router, programs } of deployments) {
+if (env) console.log(`  ${env}`);
+for (const [name, p] of Object.entries(programs)) {
   const order = `(${p.maker},${p.traits},${p.data})`;
   try {
     const out = execFileSync(
       "cast",
-      ["call", demo.router, SIG, order, ONE_WETH.toString(), takerData, "--rpc-url", rpc],
+      ["call", router, SIG, order, ONE_BASE.toString(), takerData, "--rpc-url", rpc],
       { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
     ).trim().split(/\s+/).filter((t) => /^[0-9]+$/.test(t));
-    const usdc = Number(BigInt(out[1])) / 1e6;
-    if (usdc <= 0) throw new Error("zero output");
-    console.log(`  ${name.padEnd(10)} 1 WETH -> ${usdc.toFixed(2).padStart(10)} USDC`);
+    const received = Number(BigInt(out[1])) / 10 ** quoteDecimals;
+    if (received <= 0) throw new Error("zero output");
+    console.log(`  ${env ? "  " : ""}${name.padEnd(10)} 1 WETH -> ${received.toFixed(2).padStart(12)} USDC`);
   } catch (e) {
     // humanOnly MUST reject a proofless quote — that is the feature, not a bug.
     const msg = (e.stderr ?? e.message ?? "").toString();
     if (name === "humanOnly" && /WorldIdProofMissing|0x/.test(msg)) {
-      console.log(`  ${name.padEnd(10)} correctly rejected a proofless quote`);
+      console.log(`  ${env ? "  " : ""}${name.padEnd(10)} correctly rejected a proofless quote`);
     } else {
-      console.error(`  ${name.padEnd(10)} FAILED: ${msg.slice(0, 200)}`);
+      console.error(`  ${env ? "  " : ""}${name.padEnd(10)} FAILED: ${msg.slice(0, 200)}`);
       failures++;
     }
   }
+}
 }
 process.exit(failures === 0 ? 0 : 1);

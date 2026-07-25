@@ -14,7 +14,15 @@ broadcast/
 test/fixtures/**/production/
 
 # Demo chain state — regenerate with script/demo-up.sh
+# Deploy outputs are per-machine and per-run: addresses depend on the deployer's
+# nonce, and a rehearsal against a local fork writes a worldchain.json whose
+# chainId says 480 while its addresses exist nowhere. Committing one would point
+# the frontend at contracts that do not exist.
 deployments/demo.json
+deployments/worldchain.json
+# Per-environment configs. These are the source of truth the merged config is derived
+# from, and just as machine-specific.
+deployments/worldchain-*.json
 infra/cdk.out/
 
 # CDK context cache: embeds the AWS account id and hosted zone id in its lookup
