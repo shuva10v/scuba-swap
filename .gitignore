@@ -15,3 +15,9 @@ test/fixtures/**/production/
 
 # Demo chain state — regenerate with script/demo-up.sh
 deployments/demo.json
+infra/cdk.out/
+
+# CDK context cache: embeds the AWS account id and hosted zone id in its lookup
+# keys. Not credentials, but no reason to publish them. Regenerated on synth
+# (needs AWS credentials, since it re-queries Route53).
+infra/cdk.context.json

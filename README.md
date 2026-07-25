@@ -308,14 +308,37 @@ guard gates real Aqua swaps on a World Chain fork. 43/43 tests green.
 **Exit:** ✅ 50/50 tests green. Invariants pass on both the open and the guarded
 program; guard overhead measured at ~26k gas.
 
-### Phase 5 — Frontend: **STOP AND DISCUSS** (~4h)
+### Phase 5 — Frontend (~4h)
 
-Do not implement before agreeing the flow. Options to present:
+**Backend and infrastructure: ✅ deployed and live.**
 
-- [ ] Write up options for: quote fetch, IDKit v3 / `orbLegacy` widget, packing
-      the proof into `takerArgs`, sending `swap()`
-- [ ] Decide EOA-taker vs contract-taker (changes the signal binding!)
-- [ ] Then implement
+- [x] `packages/sdk/takerArgs.mjs` — one byte-layout encoder shared by the
+      frontend and the contracts, cross-checked against Solidity by
+      `test/EncodingVectors.t.sol` (byte-for-byte *and* field order)
+- [x] `script/demo-up.sh` — anvil fork of World Chain with Aqua, the router and
+      all three programs shipped; smoke-tests live quotes through the SDK
+- [x] RP signing service (`backend/`) — `signRequest` implemented from the spec
+      and pinned against all published test vectors, including exact signature
+      bytes
+- [x] AWS: Lambda + HTTP API + CloudFront + Route53, one distribution so the SPA
+      and `/api/*` are same-origin (no CORS in production)
+- [x] **Live at `https://scubaswap.xyz/api/rp-signature`** — verified against the
+      deployed endpoint: signs an allowlisted action, refuses a foreign one,
+      `no-store` with `x-cache: Miss`, distinct nonces per call
+- [ ] Vite + React + wagmi/viem scaffold, config from `deployments/demo.json`
+- [ ] Depth panel wired to real `quote()` calls **before** any animation work
+- [ ] IDKit with `proofOfHuman()` and `allow_legacy_proofs: false`
+- [ ] Diver panel, dive computer, bot bounce
+
+**IDKit correction:** the original sketch said `orbLegacy`, which is the **v3**
+preset. Our guard verifies **v4** (`uint256[5]`, `WorldIDVerifier.verify`), so a
+v3 proof is structurally unverifiable by it. `allow_legacy_proofs` must stay
+**false**, and the SDK hard-rejects any payload that is not `protocol_version
+4.0` with a `proof_of_human` credential rather than letting it fail on-chain.
+
+**Still open:** a proof bound to a taker address we specify, for a guard-level
+e2e test. Best generated right before the demo — a v4 proof stops verifying about
+an hour after capture (W-09).
 
 ### Phase 6 — Stretch
 

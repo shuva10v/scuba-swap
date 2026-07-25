@@ -1,0 +1,7 @@
+{
+  "app": "node bin/infra.mjs",
+  "context": {
+    "allowedActions": "world-demo-v2",
+    "rpId": "rp_2c23993348beb0ce"
+  }
+}

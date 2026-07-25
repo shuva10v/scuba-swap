@@ -1,0 +1,15 @@
+{
+  "name": "scubaswap-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "RP signing service for ScubaSwap. Holds the World ID signing key; signs proof requests so World App will honour them.",
+  "scripts": {
+    "test": "node --test test/",
+    "dev": "node src/local-server.mjs"
+  },
+  "dependencies": {
+    "viem": "2.55.8",
+    "@aws-sdk/client-secrets-manager": "3.1095.0"
+  }
+}
