@@ -1,4 +1,4 @@
-# ScubaSwap — human-verified swaps inside 1inch Aqua / SwapVM
+# ScubaSwap — World ID-verified swaps inside 1inch Aqua / SwapVM
 
 > EthGlobal Lisbon hackathon project.
 
