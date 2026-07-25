@@ -37,7 +37,15 @@ be demonstrated without a redeploy.
 | Router (production verifier) | [`0x19C9bBd1152d9EFf9eDDE167A532f57014775356`](https://worldscan.org/address/0x19C9bBd1152d9EFf9eDDE167A532f57014775356) |
 | Router (staging verifier) | [`0xBCA52a9eC487F82E8fc5af06f24e2fbEf97BCf3D`](https://worldscan.org/address/0xBCA52a9eC487F82E8fc5af06f24e2fbEf97BCf3D) |
 | Aqua (self-deployed) | [`0x89EaCa90b4e905BD033f8892c27a27C3e175B113`](https://worldscan.org/address/0x89EaCa90b4e905BD033f8892c27a27C3e175B113) |
+| `WorldIDVerifier` production / staging | `0x00000000009E00F9FE82CfeeBB4556686da094d7` / `0x703a6316c975DEabF30b637c155edD53e24657DB` |
 | `dWETH` / `dUSDC` | [`0x8C8F1D10C96c9C611c963160EDD5BD721F6BACFf`](https://worldscan.org/address/0x8C8F1D10C96c9C611c963160EDD5BD721F6BACFf) / [`0x09C1526a7CbE078378D1F79c5d218030A1C083Dc`](https://worldscan.org/address/0x09C1526a7CbE078378D1F79c5d218030A1C083Dc) |
+
+Aqua is self-deployed because **Aqua and World ID 4.0 do not overlap on any chain**.
+Aqua sits at one canonical address on Ethereum, Optimism, Base, Arbitrum and Polygon and
+there is no v4 verifier on any of them; World Chain has the verifier and no Aqua. One side
+therefore has to be deployed, which Aqua's licence permits explicitly ("You may read, use,
+deploy, and call Aqua"; §4 names hackathons as free use). W-07. Aqua itself is never
+modified — the guard is a mixin on our own router.
 
 The traded pair is two freely-mintable demo tokens, not canonical WETH/USDC. Shipping
 liquidity means granting Aqua an unlimited allowance, and an allowance is only ever as
@@ -64,87 +72,7 @@ Two real swaps from the same non-maker account against the same router:
 
 ---
 
-## 1. Ground truth (verified, not assumed)
-
-### Deployed addresses (all verified live, not assumed)
-
-**Ethereum mainnet** — where Aqua is canonical:
-
-| Contract | Address |
-| --- | --- |
-| Aqua | `0x499943E74FB0cE105688beeE8Ef2ABec5D936d31` — confirmed via `rawBalances(...)` |
-| WETH / USDC | `0xC02aaA39…6Cc2` / `0xA0b86991…eB48` |
-
-**World Chain (480)** — where World ID 4.0 is canonical:
-
-| Contract | Address |
-| --- | --- |
-| `WorldIDVerifier` (production) | `0x00000000009E00F9FE82CfeeBB4556686da094d7` |
-| `WorldIDVerifier` (staging) | `0x703a6316c975DEabF30b637c155edD53e24657DB` |
-| WETH / USDC | `0x42000000…0006` / `0x79A02482…24d1` |
-| Aqua | **no canonical deployment** — `eth_getCode` returns `0x`. We deploy our own; see [§0](#0-live) |
-
-**The two do not overlap.** Aqua sits at the same address on Ethereum, Optimism,
-Base, Arbitrum and Polygon, and on none of them is there a v4 verifier; World
-Chain has the verifier and no Aqua. So one side has to be self-deployed, and we
-deploy Aqua on a World Chain fork — permitted explicitly by its licence ("You may
-read, use, deploy, and call Aqua"; §4 names hackathons as free use). FRICTION W-07.
-
-The Ethereum suite still runs against *canonical* Aqua, so both claims are proven
-on the chain where each can actually be made:
-
-- `ScubaRouterFork.t.sol` (Ethereum) — our router does not disturb real Aqua
-- `WorldIdRealProof.t.sol` (World Chain) — our encoding satisfies the real verifier
-
-There is no canonical `AquaSwapVMRouter` anywhere; `chain-1.json` still ships
-`0x0000…` placeholders. Anyone deploys their own router against the shared
-registry — that is the point of Aqua.
-
-### Corrections to the original design doc
-
-Reading the real `1inch/swap-vm` source turned up five mismatches with the
-brainstormed spec. The plan below reflects the corrected reality.
-
-1. **The `_instructions()` array exists on the *tag*, but not on `main`.** Your
-   spec matches `swap-vm@v1.0.1`. On `main`, that whole mechanism was replaced by
-   a banked `enum Opcode` (`src/libs/OpcodeList.sol`) covering `0x00`–`0xff` and
-   an if/else `_runOpcode(Context, uint256 opcode, bytes calldata)` chain. New
-   instructions take the *next free slot in their family bank*.
-
-   **We build against `main`, pinned at commit `0817db4a`.** On the tag, adding
-   one instruction means restating all 35 entries of a static function-pointer
-   array literal — which makes "keep stock opcode bytes stable" impossible to
-   guarantee. On `main` it is `super._runOpcode(...)` and done. See FRICTION F-10.
-   → we claim `0x27` (`OnlyHumanTaker`) and `0x33` (`JumpIfHumanTaker`) in the
-   `0x20–0x3f` "conditions & access guards" bank, locked by a regression test.
-2. **The router constructor takes 5 args, not 4:**
-   `SwapVM(aqua, weth, owner, name, version)` — `owner` is for `Rescuable`.
-3. **It is `ctx.vm.isStaticContext`**, not `ctx.isStaticContext`.
-4. **`quote()` is `external` but *not* `view`.** It is *intended* to be
-   staticcalled, and the repo's own helpers do exactly that via
-   `swapVM.asView().quote(...)`. So any storage write inside an instruction
-   reverts during quoting. Static branching is mandatory, not optional.
-5. **Program instruction args are capped at 255 bytes** — `runLoop` reads a
-   1-byte arg length. A Groth16 proof is `8 * 32 = 256` bytes before root and
-   nullifier. Proof data therefore *must* travel in `takerArgs`, which confirms
-   the original design. (`takerArgs` is `TakerTraits.instructionsArgs`.)
-
-Also worth knowing:
-
-- `ctx.query.taker == msg.sender` of `swap()`/`quote()`. The World ID **signal
-  must be bound to that address**, and if a taker routes through an aggregator
-  contract, `taker` is the aggregator. See FRICTION.md.
-- `ContextLib.tryChopTakerArgs(ctx, n)` silently returns `min(n, available)`
-  bytes. It does **not** revert when the taker supplied nothing — we must check
-  the returned length ourselves.
-- Neither `@1inch/swap-vm` nor `@1inch/aqua` is published to npm. Both are
-  consumed as git deps (`swap-vm@0817db4a` on `main`, `aqua@v1.0.0`).
-- The repos build with `solc 0.8.30`, `via_ir = true`, `optimizer_runs = 700`.
-  We must match to link against their sources.
-
----
-
-## 2. Architecture
+## 1. Architecture
 
 ```
 src/
@@ -265,7 +193,9 @@ swap.
 invalid proof — because it powers a discount tier, not a gate. Programs that must
 reject use `OnlyHumanTaker`, which reverts.
 
-## 3. Implementation plan
+---
+
+## 2. Implementation plan
 
 Estimates assume ~30h budget. Phases 0–4 are the deliverable; 5–6 are stretch.
 
@@ -450,7 +380,7 @@ used**; the v3 sketch in the original PoC was discarded in Phase 3.
 
 ---
 
-## 4. Risks
+## 3. Risks
 
 | Risk | Mitigation |
 | --- | --- |
@@ -466,7 +396,7 @@ used**; the v3 sketch in the original PoC was discarded in Phase 3.
 
 ---
 
-## 5. Resolved unknowns
+## 4. Resolved unknowns
 
 Everything this plan was blocked on is answered, and each answer cost something worth
 recording:
@@ -495,7 +425,9 @@ Two facts the verifier taught us that no document states:
   the taker name it. No substituted `rpId` verifies either — though that test cannot
   fully separate "bound into the proof" from "not registered on this verifier".
 
-## 6. Rules of engagement
+---
+
+## 5. Rules of engagement
 
 - Foundry. Git history must show incremental work.
 - Official contracts only. **Aqua is never modified.** All custom logic lives in
