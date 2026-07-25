@@ -4,3 +4,11 @@ cache/
 broadcast/
 .env
 .DS_Store
+
+# World ID production proofs must never be committed. A production `nullifier`
+# is a persistent pseudonymous identifier tied to a real Orb-verified identity:
+# stable per (identity, rp_id, action), so publishing one lets anyone link that
+# person's future verifications. Staging fixtures are fine.
+*.PRIVATE.json
+*production*.json
+test/fixtures/**/production/

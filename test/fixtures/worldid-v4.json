@@ -1,0 +1,109 @@
+{
+  "_comment": [
+    "VERIFIED World ID 4.0 proof — STAGING ONLY.",
+    "",
+    "Confirmed to PASS verify() on the staging WorldIDVerifier proxy",
+    "0x703a6316c975DEabF30b637c155edD53e24657DB on World Chain (chainid 480),",
+    "and to FAIL under perturbation of every public input (see measuredBehaviour).",
+    "",
+    "Only the staging proof is committed. A production proof's `nullifier` is a",
+    "persistent pseudonymous identifier derived from a real Orb-verified World ID:",
+    "it is stable for a given (identity, rp_id, action), so publishing one would",
+    "let anyone link that person's future verifications for the same action.",
+    "Production fixtures stay out of the repo — see .gitignore.",
+    "",
+    "Behaviour was cross-checked against a production proof and the two verifiers",
+    "are byte-for-byte identical in every respect measured below, so this fixture",
+    "is a faithful stand-in for building and testing the guard.",
+    "",
+    "TWO FINDINGS THAT DRIVE THE GUARD DESIGN:",
+    "",
+    "1. The docs are WRONG about `action`.",
+    "   docs.world.org/world-id/idkit/onchain-verification states",
+    "   `action = keccak256(action) as uint256`. That value exceeds the BN254",
+    "   field modulus and reverts InvalidAction() (0x4a7f394f) on BOTH verifiers.",
+    "   Correct: hashToField(action) = uint256(keccak256(action)) >> 8.",
+    "   See FRICTION W-05.",
+    "",
+    "2. The verifier does NOT enforce expiry.",
+    "   Both proofs verified while their own expiresAtMin was already in the past",
+    "   (staging by 189s, production by 314s). expiresAtMin is a committed public",
+    "   input — perturbing it by 1 reverts ProofInvalid() — but it is never",
+    "   compared to block.timestamp. Freshness is the INTEGRATING CONTRACT's",
+    "   responsibility. ScubaSwap's guard MUST enforce",
+    "   require(expiresAtMin >= block.timestamp). See FRICTION W-06."
+  ],
+
+  "verifier": {
+    "chain": "World Chain",
+    "chainId": 480,
+    "signature": "verify(uint256,uint256,uint64,uint256,uint256,uint64,uint64,uint256,uint256[5])",
+    "staging": "0x703a6316c975DEabF30b637c155edD53e24657DB",
+    "production": "0x00000000009E00F9FE82CfeeBB4556686da094d7"
+  },
+
+  "verifyArgs": {
+    "_order": "exactly the argument order of verify(...) above",
+    "nullifier": "0x26efd602e274376068fddd99992d32c5793ca2cc859dc6e4bc06336297eb60d5",
+    "action": "101602870439241109073840284710247971832557843987198197529600370871409505245",
+    "_actionDerivation": "uint256(keccak256(\"world-demo-v2\")) >> 8   <-- NOT plain keccak256",
+    "rpId": "3180554207396540622",
+    "_rpIdDerivation": "uint64 of the hex tail of rp_2c23993348beb0ce",
+    "nonce": "0x00d8df4f8cf01c2c27e74f922ee17dcc747ff80407a825692e096e44c2826c2a",
+    "signalHash": "0x00e9707d0e6171f728f7473c24cc0432a9b07eaaf1efed6a137a4a8c12c79552",
+    "expiresAtMin": 1784973549,
+    "issuerSchemaId": 1,
+    "credentialGenesisIssuedAtMin": 0,
+    "proof": [
+      "32095448910909860810393436618942389892449956964229949035147239156472140532263",
+      "12331085984318066388399435178523376893681874609957699215694269413480928374871",
+      "3661605591643862290821400578691801265227703108752249123861858776064121142485",
+      "27969947916003451908629688123350335859922869523484484721346467459848842139582",
+      "1273623503493030971440427686945873491346167620388747573336306150755243209408"
+    ]
+  },
+
+  "raw": {
+    "action": "world-demo-v2",
+    "environment": "staging",
+    "nonce": "0x00d8df4f8cf01c2c27e74f922ee17dcc747ff80407a825692e096e44c2826c2a",
+    "protocol_version": "4.0",
+    "rp_id": "rp_2c23993348beb0ce",
+    "user_presence_completed": false,
+    "responses": [
+      {
+        "expires_at_min": 1784973549,
+        "identifier": "proof_of_human",
+        "issuer_schema_id": 1,
+        "nullifier": "0x26efd602e274376068fddd99992d32c5793ca2cc859dc6e4bc06336297eb60d5",
+        "signal_hash": "0x00e9707d0e6171f728f7473c24cc0432a9b07eaaf1efed6a137a4a8c12c79552",
+        "proof": [
+          "32095448910909860810393436618942389892449956964229949035147239156472140532263",
+          "12331085984318066388399435178523376893681874609957699215694269413480928374871",
+          "3661605591643862290821400578691801265227703108752249123861858776064121142485",
+          "27969947916003451908629688123350335859922869523484484721346467459848842139582",
+          "1273623503493030971440427686945873491346167620388747573336306150755243209408"
+        ]
+      }
+    ]
+  },
+
+  "measuredBehaviour": {
+    "_comment": "Measured against the live verifiers. Staging and production behaved identically on every row.",
+    "baseline": "OK (returns 0x)",
+    "actionAsPlainKeccak": "InvalidAction() 0x4a7f394f",
+    "wrongSignalHash": "ProofInvalid() 0x7fcdd1f4",
+    "wrongNonce": "ProofInvalid() 0x7fcdd1f4",
+    "wrongNullifier": "ProofInvalid() 0x7fcdd1f4",
+    "expiresAtMinPlusOne": "ProofInvalid() 0x7fcdd1f4",
+    "genesisIssuedAtMinNonZero": "ProofInvalid() 0x7fcdd1f4",
+    "wrongRpId": "reverts (no selector)",
+    "wrongIssuerSchemaId": "UnregisteredIssuerSchemaId() 0xc7eb504d",
+    "crossEnvironment": "InvalidMerkleRoot() 0x9dd854d3 — confirms proof[4] is the Merkle root and that staging/production are separate identity trees",
+    "alreadyExpired": "STILL VERIFIES — see finding 2 above"
+  },
+
+  "unknowns": {
+    "signalPreimage": "signal_hash is one-way and cannot be inverted. ScubaSwap's guard derives signalHash from ctx.query.taker, so the taker address in any e2e test MUST be the address this proof was bound to. Needed from the fixture author. Note it is identical across staging and production, so whatever it is, it is stable."
+  }
+}
