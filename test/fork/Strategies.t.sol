@@ -322,6 +322,6 @@ contract StrategiesTest is WorldChainForkBase, CoreInvariants {
             zk
         );
 
-        return WorldIdGuardArgsBuilder.buildProof(nullifier, nonce, expiresAtMin, zk);
+        return WorldIdGuardArgsBuilder.buildProof(nullifier, nonce, expiresAtMin, zk, ACTION);
     }
 }

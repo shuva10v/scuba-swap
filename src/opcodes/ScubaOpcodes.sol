@@ -29,9 +29,9 @@ uint256 constant SCUBA_OP_JUMP_IF_HUMAN = 0x33;
 /// and delegate everything else to `super`, so every stock opcode keeps its
 /// number, its arguments and its behaviour. Aqua and SwapVM are never modified.
 abstract contract ScubaOpcodes is AquaOpcodes, WorldIdGuard {
-    constructor(address aqua, IWorldIDVerifier verifier, string memory action, uint64 rpId)
+    constructor(address aqua, IWorldIDVerifier verifier, string memory actionPrefix, uint64 rpId)
         AquaOpcodes(aqua)
-        WorldIdGuard(verifier, action, rpId)
+        WorldIdGuard(verifier, actionPrefix, rpId)
     { }
 
     /// @inheritdoc AquaOpcodes

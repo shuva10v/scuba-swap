@@ -70,6 +70,118 @@ contract WorldIdGuardTest is WorldChainForkBase {
         assertEq(balUsdc, SHIP_USDC + sIn, "Aqua USDC balance did not grow by amountIn");
     }
 
+    // ===== prefix-scoped actions =====
+
+    /// @notice The property the whole scheme exists for: one human, two dives.
+    ///
+    /// @dev World ID caps issuance at one proof per (identity, rp, action), and that
+    /// cap lives in the issuer, not in any contract. A router pinning one exact
+    /// action therefore granted each human a single swap for the router's entire
+    /// lifetime — and once their device refused to mint again, only a redeploy
+    /// helped. FRICTION W-08, W-10.
+    ///
+    /// Committing to a prefix instead lets the taker name a fresh action per dive.
+    /// Note the two proofs here carry *different* actions, which is what a real
+    /// second World App round-trip would produce.
+    function test_humanOnly_sameHumanDivesTwiceWithDifferentActions() public {
+        ISwapVM.Order memory order = _createOrder(_humanOnlyProgram(11));
+        _shipDefault(SwapVM(payable(address(router))), order);
+
+        uint256 amountIn = 5_000e6;
+        _fundTaker(address(router), human, USDC, amountIn * 2);
+
+        bytes memory first =
+            _proofWithAction(human, _nullifier(11), _nonce(11), uint64(block.timestamp + 300), "world-demo-v2-1");
+        vm.prank(human);
+        (, uint256 outFirst,) = router.swap(order, amountIn, _takerData(human, true, false, first));
+        assertGt(outFirst, 0, "first dive delivered nothing");
+
+        // A genuinely different action: different nullifier, different nonce.
+        bytes memory second =
+            _proofWithAction(human, _nullifier(12), _nonce(12), uint64(block.timestamp + 300), "world-demo-v2-2");
+        vm.prank(human);
+        (, uint256 outSecond,) = router.swap(order, amountIn, _takerData(human, true, false, second));
+        assertGt(outSecond, 0, "second dive rejected: the prefix scheme is not working");
+    }
+
+    function test_humanOnly_actionOutsideThePrefixIsRejected() public {
+        ISwapVM.Order memory order = _createOrder(_humanOnlyProgram(13));
+        _shipDefault(SwapVM(payable(address(router))), order);
+        _fundTaker(address(router), human, USDC, 10_000e6);
+
+        // Valid proof, correct rp, bound to the right taker — but an action this
+        // router does not serve. The rp still pins the app; the prefix pins the
+        // purpose within it.
+        bytes memory proof =
+            _proofWithAction(human, _nullifier(13), _nonce(13), uint64(block.timestamp + 300), "some-other-action");
+
+        vm.prank(human);
+        vm.expectRevert(WorldIdGuard.WorldIdActionNotAllowed.selector);
+        router.swap(order, 10_000e6, _takerData(human, true, false, proof));
+    }
+
+    /// @dev A prefix must match at the *start*, not anywhere. Otherwise an action
+    /// belonging to some other purpose could smuggle the prefix in as a suffix.
+    function test_humanOnly_prefixMustMatchAtTheStart() public {
+        ISwapVM.Order memory order = _createOrder(_humanOnlyProgram(14));
+        _shipDefault(SwapVM(payable(address(router))), order);
+        _fundTaker(address(router), human, USDC, 10_000e6);
+
+        bytes memory proof = _proofWithAction(
+            human, _nullifier(14), _nonce(14), uint64(block.timestamp + 300), string.concat("evil-", ACTION)
+        );
+
+        vm.prank(human);
+        vm.expectRevert(WorldIdGuard.WorldIdActionNotAllowed.selector);
+        router.swap(order, 10_000e6, _takerData(human, true, false, proof));
+    }
+
+    /// @dev An action shorter than the prefix cannot match. Worth its own test
+    /// because the length guard is what stops `action[:prefixLength]` reverting with
+    /// a bare panic instead of the guard's own error.
+    function test_humanOnly_actionShorterThanPrefixIsRejected() public {
+        ISwapVM.Order memory order = _createOrder(_humanOnlyProgram(15));
+        _shipDefault(SwapVM(payable(address(router))), order);
+        _fundTaker(address(router), human, USDC, 10_000e6);
+
+        bytes memory proof =
+            _proofWithAction(human, _nullifier(15), _nonce(15), uint64(block.timestamp + 300), "world");
+
+        vm.prank(human);
+        vm.expectRevert(WorldIdGuard.WorldIdActionNotAllowed.selector);
+        router.swap(order, 10_000e6, _takerData(human, true, false, proof));
+    }
+
+    /// @notice The tiered guard must fall through, not revert, on a wrong action.
+    ///
+    /// @dev `_jumpIfHumanTaker` promises never to revert — it powers a discount tier,
+    /// so every failure mode has to mean "pay the open price". The action check is a
+    /// new failure mode and had to be added to that promise rather than to the
+    /// strict guard's error path.
+    function test_tiered_actionOutsideThePrefixPaysOpenPrice() public {
+        ISwapVM.Order memory order = _createOrder(_tieredProgram(16));
+        _shipDefault(SwapVM(payable(address(router))), order);
+
+        uint256 amountIn = 10_000e6;
+
+        bytes memory wrongAction =
+            _proofWithAction(human, _nullifier(16), _nonce(16), uint64(block.timestamp + 300), "some-other-action");
+
+        uint256 snap = vm.snapshotState();
+        _fundTaker(address(router), human, USDC, amountIn);
+        vm.prank(human);
+        (, uint256 outWrong,) = router.swap(order, amountIn, _takerData(human, true, false, wrongAction));
+        vm.revertToState(snap);
+
+        // Same swap with no proof at all must produce exactly the same amount: a
+        // rejected action is indistinguishable from an absent proof, by design.
+        _fundTaker(address(router), bot, USDC, amountIn);
+        vm.prank(bot);
+        (, uint256 outNone,) = router.swap(order, amountIn, _takerData(bot, true, false, ""));
+
+        assertEq(outWrong, outNone, "a wrong action should price exactly as no proof does");
+    }
+
     function test_humanOnly_takerWithNoProofIsRejected() public {
         ISwapVM.Order memory order = _createOrder(_humanOnlyProgram(2));
         _shipDefault(SwapVM(payable(address(router))), order);
@@ -80,7 +192,11 @@ contract WorldIdGuardTest is WorldChainForkBase {
         // rather than reverting, so a guard that trusted it would read zeros and
         // treat "no proof at all" as a payload. This must fail loudly.
         vm.prank(bot);
-        vm.expectRevert(abi.encodeWithSelector(WorldIdGuard.WorldIdProofMissing.selector, 0, 232));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                WorldIdGuard.WorldIdProofMissing.selector, 0, WorldIdGuardArgsBuilder.PROOF_HEAD_LENGTH
+            )
+        );
         router.swap(order, 10_000e6, _takerData(bot, true, false, ""));
     }
 
@@ -92,7 +208,40 @@ contract WorldIdGuardTest is WorldChainForkBase {
         bytes memory truncated = _sliceOff(_validProofFor(bot, 3), 40);
 
         vm.prank(bot);
-        vm.expectRevert(abi.encodeWithSelector(WorldIdGuard.WorldIdProofMissing.selector, 192, 232));
+        // 40 bytes off a (233 + action) payload leaves less than the fixed head, so
+        // it is the head chop that comes up short.
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                WorldIdGuard.WorldIdProofMissing.selector,
+                WorldIdGuardArgsBuilder.PROOF_HEAD_LENGTH + bytes(ACTION).length - 40,
+                WorldIdGuardArgsBuilder.PROOF_HEAD_LENGTH
+            )
+        );
+        router.swap(order, 10_000e6, _takerData(bot, true, false, truncated));
+    }
+
+    /// @notice A payload whose action is shorter than its own length byte claims.
+    ///
+    /// @dev Distinct from the case above, and the reason the guard checks the action
+    /// chop separately: here the fixed head arrives intact, so the length byte is
+    /// read and trusted before the bytes it describes are known to exist.
+    /// `tryChopTakerArgs` clamps to what remains instead of reverting (F-04), so
+    /// without an explicit check the guard would hash a short action and verify
+    /// against the wrong field element.
+    function test_humanOnly_truncatedActionIsRejected() public {
+        ISwapVM.Order memory order = _createOrder(_humanOnlyProgram(3));
+        _shipDefault(SwapVM(payable(address(router))), order);
+        _fundTaker(address(router), bot, USDC, 10_000e6);
+
+        // Drop only the last 3 bytes, leaving the head and length byte untouched.
+        bytes memory truncated = _sliceOff(_validProofFor(bot, 3), 3);
+
+        vm.prank(bot);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                WorldIdGuard.WorldIdProofMissing.selector, bytes(ACTION).length - 3, bytes(ACTION).length
+            )
+        );
         router.swap(order, 10_000e6, _takerData(bot, true, false, truncated));
     }
 
@@ -393,12 +542,26 @@ contract WorldIdGuardTest is WorldChainForkBase {
         private
         returns (bytes memory)
     {
+        return _proofWithAction(taker, nullifier, nonce, expiresAtMin, ACTION);
+    }
+
+    /// @dev Registers under `action`'s own field element, so the mock accepts the
+    /// proof only for the action the taker actually names. That matters for the
+    /// prefix tests: registering under ACTION while sending a suffixed action would
+    /// pass the prefix check and then fail verification, testing the wrong thing.
+    function _proofWithAction(
+        address taker,
+        uint256 nullifier,
+        uint256 nonce,
+        uint64 expiresAtMin,
+        string memory action
+    ) private returns (bytes memory) {
         uint256[5] memory zk =
             [uint256(0xaaa1), uint256(0xbbb2), uint256(0xccc3), uint256(0xddd4), uint256(0xeee5)];
 
         verifier.accept(
             nullifier,
-            bytes(ACTION).hashToField(),
+            bytes(action).hashToField(),
             RP_ID,
             nonce,
             abi.encodePacked(taker).hashToField(),
@@ -408,7 +571,7 @@ contract WorldIdGuardTest is WorldChainForkBase {
             zk
         );
 
-        return WorldIdGuardArgsBuilder.buildProof(nullifier, nonce, expiresAtMin, zk);
+        return WorldIdGuardArgsBuilder.buildProof(nullifier, nonce, expiresAtMin, zk, action);
     }
 
     /// @dev A well-formed payload the verifier has never seen. Separate from
@@ -422,7 +585,7 @@ contract WorldIdGuardTest is WorldChainForkBase {
     {
         uint256[5] memory zk =
             [uint256(0xdead1), uint256(0xdead2), uint256(0xdead3), uint256(0xdead4), uint256(0xdead5)];
-        return WorldIdGuardArgsBuilder.buildProof(nullifier, nonce, expiresAtMin, zk);
+        return WorldIdGuardArgsBuilder.buildProof(nullifier, nonce, expiresAtMin, zk, ACTION);
     }
 
     function _sliceOff(bytes memory data, uint256 drop) private pure returns (bytes memory out) {

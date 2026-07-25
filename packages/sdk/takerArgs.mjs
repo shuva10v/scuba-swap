@@ -22,6 +22,10 @@ export const LAYOUT = {
   POLICY_WITH_PC: 42,
   /** nullifier(32) || nonce(32) || expiresAtMin(8) || proof[5](160) */
   PROOF: 232,
+  /** The fixed head, plus the one-byte length of the action string that follows. */
+  PROOF_HEAD: 233,
+  /** Longest action the guard will hash. */
+  MAX_ACTION: 64,
 };
 
 /** Opcodes ScubaSwap claims in the SwapVM opcode space. */
@@ -91,10 +95,16 @@ export function buildPolicyWithPC({ jumpPC, issuerSchemaId, credentialGenesisIss
  * on-chain from `ctx.query.taker`. Sending it would be meaningless at best and
  * an attempt to impersonate at worst.
  *
+ * The `action` IS part of the payload, and must be: World ID issues at most one
+ * proof per (identity, rp, action), so a contract pinning one exact action would
+ * allow each human a single gear-up for its entire lifetime. The taker names the
+ * action they minted against and the guard checks it against the maker's prefix.
+ *
  * @param {object} response  One entry of `idkitResult.responses[]`
- * @returns {`0x${string}`}  232 bytes
+ * @param {string} action    Full action string the proof was minted against
+ * @returns {`0x${string}`}  233 + action.length bytes
  */
-export function buildProofArgs(response) {
+export function buildProofArgs(response, action) {
   const proof = response.proof;
   if (!Array.isArray(proof) || proof.length !== 5) {
     throw new EncodingError(
@@ -110,17 +120,30 @@ export function buildProofArgs(response) {
     );
   }
 
+  if (typeof action !== "string" || action.length === 0) {
+    throw new EncodingError("action is required — the guard verifies the proof against it");
+  }
+  // The length prefix is one byte on-chain, and the guard hashes the action twice,
+  // so the bound is enforced here rather than discovered as a revert.
+  const actionBytes = new TextEncoder().encode(action);
+  if (actionBytes.length > LAYOUT.MAX_ACTION) {
+    throw new EncodingError(`action is ${actionBytes.length} bytes, max ${LAYOUT.MAX_ACTION}`);
+  }
+
   const parts = [
     pad(response.nullifier, 32, "nullifier"),
     pad(response.nonce, 32, "nonce"),
     pad(response.expires_at_min, 8, "expires_at_min"),
     ...proof.map((p, i) => pad(p, 32, `proof[${i}]`)),
+    actionBytes.length.toString(16).padStart(2, "0"),
+    [...actionBytes].map((b) => b.toString(16).padStart(2, "0")).join(""),
   ];
 
   const hex = `0x${parts.join("")}`;
   const byteLength = (hex.length - 2) / 2;
-  if (byteLength !== LAYOUT.PROOF) {
-    throw new EncodingError(`encoded ${byteLength} bytes, expected ${LAYOUT.PROOF}`);
+  const expected = LAYOUT.PROOF_HEAD + actionBytes.length;
+  if (byteLength !== expected) {
+    throw new EncodingError(`encoded ${byteLength} bytes, expected ${expected}`);
   }
   return hex;
 }
@@ -135,7 +158,7 @@ export function buildProofArgs(response) {
  * by a different contract. Passing one to our guard produces a confusing
  * on-chain revert rather than an obvious client-side error.
  */
-export function proofFromIdkitResult(result) {
+export function proofFromIdkitResult(result, action) {
   if (result?.protocol_version !== "4.0") {
     throw new EncodingError(
       `expected protocol_version "4.0", got ${JSON.stringify(result?.protocol_version)}. ` +
@@ -150,7 +173,7 @@ export function proofFromIdkitResult(result) {
   }
 
   // The top-level nonce is a public input; it is NOT inside the response entry.
-  return buildProofArgs({ ...response, nonce: result.nonce });
+  return buildProofArgs({ ...response, nonce: result.nonce }, action);
 }
 
 export { EncodingError };

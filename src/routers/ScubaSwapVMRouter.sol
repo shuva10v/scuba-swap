@@ -28,7 +28,9 @@ contract ScubaSwapVMRouter is Simulator, SwapVM, ScubaOpcodes {
     /// @param name EIP-712 domain name
     /// @param version EIP-712 domain version
     /// @param verifier World ID 4.0 verifier (World Chain), or a mock in tests
-    /// @param action Developer Portal action string, hashed to a field element
+    /// @param actionPrefix Required prefix of the Developer Portal action string.
+    /// Takers name the full action; the guard accepts any that starts with this. Pass
+    /// the whole action to demand it exactly. See `WORLD_ID_ACTION_PREFIX_HASH`.
     /// @param rpId uint64 form of the Developer Portal `rp_...` id
     constructor(
         address aqua,
@@ -37,9 +39,9 @@ contract ScubaSwapVMRouter is Simulator, SwapVM, ScubaOpcodes {
         string memory name,
         string memory version,
         IWorldIDVerifier verifier,
-        string memory action,
+        string memory actionPrefix,
         uint64 rpId
-    ) SwapVM(aqua, weth, owner, name, version) ScubaOpcodes(aqua, verifier, action, rpId) { }
+    ) SwapVM(aqua, weth, owner, name, version) ScubaOpcodes(aqua, verifier, actionPrefix, rpId) { }
 
     /// @dev Dispatches an opcode to its handler for VM execution
     function _dispatch(Context memory ctx, uint256 opcode, bytes calldata args) internal override {

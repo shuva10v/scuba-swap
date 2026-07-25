@@ -28,7 +28,8 @@ contract EncodingVectorsTest is Test {
         json = vm.readFile("test/fixtures/encoding-vectors.json");
     }
 
-    /// @notice The 232-byte taker payload matches the JS packer exactly.
+    /// @notice The taker payload — proof head, action length byte and action —
+    /// matches the JS packer exactly.
     function test_proofArgsMatchJsPacker() public view {
         uint256[5] memory proof;
         uint256[] memory p = vm.parseJsonUintArray(json, ".inputs.proof");
@@ -40,11 +41,16 @@ contract EncodingVectorsTest is Test {
             vm.parseJsonUint(json, ".inputs.nullifier"),
             vm.parseJsonUint(json, ".inputs.nonce"),
             uint64(vm.parseJsonUint(json, ".inputs.expiresAtMin")),
-            proof
+            proof,
+            vm.parseJsonString(json, ".inputs.action")
         );
 
         assertEq(fromSolidity, vm.parseJsonBytes(json, ".proofArgs"), "taker proof layout diverged from the frontend");
-        assertEq(fromSolidity.length, WorldIdGuardArgsBuilder.PROOF_LENGTH, "unexpected length");
+        assertEq(
+            fromSolidity.length,
+            WorldIdGuardArgsBuilder.PROOF_HEAD_LENGTH + bytes(vm.parseJsonString(json, ".inputs.action")).length,
+            "unexpected length"
+        );
     }
 
     function test_policyMatchesJsPacker() public view {

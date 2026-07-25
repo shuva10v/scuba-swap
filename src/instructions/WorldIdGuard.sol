@@ -24,6 +24,17 @@ library WorldIdGuardArgsBuilder {
     uint256 internal constant POLICY_WITH_PC_LENGTH = 42;
     /// @dev nullifier(32) || nonce(32) || expiresAtMin(8) || proof[5](160)
     uint256 internal constant PROOF_LENGTH = 232;
+    /// @dev The fixed head, plus the one-byte length of the action that follows.
+    uint256 internal constant PROOF_HEAD_LENGTH = 233;
+
+    /// @dev Longest action string the guard will hash.
+    ///
+    /// The action is taker-supplied and variable-length, so it needs a bound: it is
+    /// hashed twice (once for the prefix check, once for `hashToField`) and an
+    /// unbounded string would let a taker inflate the gas cost of a quote. 64 bytes
+    /// fits any sane `prefix-<suffix>` and is far below the 255 a single length byte
+    /// could express.
+    uint256 internal constant MAX_ACTION_LENGTH = 64;
 
     /// @notice Maker policy for the strict guard (opcode 0x27).
     function buildPolicy(uint64 issuerSchemaId, uint256 credentialGenesisIssuedAtMin)
@@ -44,15 +55,35 @@ library WorldIdGuardArgsBuilder {
     }
 
     /// @notice Taker proof payload, straight from an IDKit v4 response.
+    ///
     /// @dev `signalHash` is deliberately absent: the guard derives it from
     /// `ctx.query.taker` so a taker cannot present someone else's proof.
-    function buildProof(uint256 nullifier, uint256 nonce, uint64 expiresAtMin, uint256[5] memory proof)
-        internal
-        pure
-        returns (bytes memory)
-    {
+    ///
+    /// `action` *is* taker-supplied, and it must be: World ID issues at most one
+    /// proof per (identity, rp, action), so a router pinning one exact action would
+    /// give each human exactly one gear-up for the router's whole lifetime. The
+    /// taker names the action they minted against and the guard checks it against
+    /// the maker's prefix — see the `WORLD_ID_ACTION_PREFIX_HASH` notes for why that
+    /// is safe.
+    function buildProof(
+        uint256 nullifier,
+        uint256 nonce,
+        uint64 expiresAtMin,
+        uint256[5] memory proof,
+        string memory action
+    ) internal pure returns (bytes memory) {
+        require(bytes(action).length <= MAX_ACTION_LENGTH, "action too long");
         return abi.encodePacked(
-            nullifier, nonce, expiresAtMin, proof[0], proof[1], proof[2], proof[3], proof[4]
+            nullifier,
+            nonce,
+            expiresAtMin,
+            proof[0],
+            proof[1],
+            proof[2],
+            proof[3],
+            proof[4],
+            uint8(bytes(action).length),
+            action
         );
     }
 
@@ -90,6 +121,13 @@ library WorldIdGuardArgsBuilder {
             expiresAtMin := shr(192, calldataload(add(args.offset, 64)))
             // uint256[5] memory is five consecutive words, no length prefix.
             calldatacopy(proof, add(args.offset, 72), 160)
+        }
+    }
+
+    /// @dev The action length byte that follows the fixed proof head.
+    function parseActionLength(bytes calldata args) internal pure returns (uint256 len) {
+        assembly ("memory-safe") {
+            len := shr(248, calldataload(add(args.offset, PROOF_LENGTH)))
         }
     }
 }
@@ -135,12 +173,46 @@ abstract contract WorldIdGuard {
     error WorldIdProofExpired(uint64 expiresAtMin, uint256 timestamp);
     /// @dev This exact proof has already been used for a swap.
     error WorldIdProofAlreadySpent(uint256 nullifier, uint256 nonce);
+    /// @dev The taker-supplied action does not start with the maker's prefix.
+    error WorldIdActionNotAllowed();
 
     /// @notice World ID 4.0 verifier. Immutable so tests can point at a mock or
     /// at the staging proxy without a code change.
     IWorldIDVerifier public immutable WORLD_ID_VERIFIER;
-    /// @notice `hashToField(action)` — NOT plain keccak256. FRICTION W-05.
-    uint256 public immutable WORLD_ID_ACTION;
+
+    /// @notice `keccak256` of the required action prefix, with its length.
+    ///
+    /// @dev Not the action itself, and that is the difference between a demo you can
+    /// run once and one you can run repeatedly.
+    ///
+    /// World ID issues at most one proof per (identity, rp, action) — the cap is at
+    /// the *issuance* layer, so it is not something a contract can lift. Pinning one
+    /// exact action therefore gave each human a single gear-up per router deployment,
+    /// after which their device refused to mint and only a redeploy helped. Since a
+    /// swap is a repeatable action, that is the wrong shape entirely (FRICTION W-08,
+    /// W-10).
+    ///
+    /// Committing to a prefix instead lets the taker name `"<prefix>-<suffix>"` and
+    /// mint a fresh proof per dive. What it costs: any action under this rp sharing
+    /// the prefix is accepted, so the prefix must be specific enough not to collide
+    /// with some other purpose in the same app.
+    ///
+    /// The security boundary is unchanged, because it was never the action:
+    ///  - `WORLD_ID_RP_ID` still pins the app, so no other app's proof is usable
+    ///  - `_signalHash(taker)` still binds the proof to the address swapping
+    ///  - `spentProofs` still makes each proof single-use
+    ///  - `_isFresh` still bounds its lifetime
+    ///
+    /// A free choice of suffix means a human can gear up as often as they like — one
+    /// World App liveness check each time. That is the intended property: the goal is
+    /// "a human is here now", not "this human has traded once".
+    ///
+    /// Note an exact action is still expressible: pass the whole action as the
+    /// prefix, and only that string satisfies the check.
+    bytes32 public immutable WORLD_ID_ACTION_PREFIX_HASH;
+    /// @notice Length in bytes of the committed prefix.
+    uint256 public immutable WORLD_ID_ACTION_PREFIX_LENGTH;
+
     /// @notice uint64 of the hex tail of the Developer Portal `rp_...` id.
     uint64 public immutable WORLD_ID_RP_ID;
 
@@ -162,9 +234,16 @@ abstract contract WorldIdGuard {
     /// @notice Proofs already consumed, keyed by (nullifier, nonce).
     mapping(bytes32 proofId => bool spent) public spentProofs;
 
-    constructor(IWorldIDVerifier verifier, string memory action, uint64 rpId) {
+    constructor(IWorldIDVerifier verifier, string memory actionPrefix, uint64 rpId) {
+        // An empty prefix would accept every action under the rp. That may be
+        // defensible, but it should be a deliberate choice rather than the result of
+        // forgetting a constructor argument.
+        require(bytes(actionPrefix).length > 0, "empty action prefix");
+        require(bytes(actionPrefix).length <= WorldIdGuardArgsBuilder.MAX_ACTION_LENGTH, "action prefix too long");
+
         WORLD_ID_VERIFIER = verifier;
-        WORLD_ID_ACTION = bytes(action).hashToField();
+        WORLD_ID_ACTION_PREFIX_HASH = keccak256(bytes(actionPrefix));
+        WORLD_ID_ACTION_PREFIX_LENGTH = bytes(actionPrefix).length;
         WORLD_ID_RP_ID = rpId;
     }
 
@@ -187,7 +266,8 @@ abstract contract WorldIdGuard {
         );
         (uint64 issuerSchemaId, uint256 genesisMin) = args.parsePolicy();
 
-        (uint256 nullifier, uint256 nonce, uint64 expiresAtMin, uint256[5] memory proof) = _chopProof(ctx);
+        (uint256 nullifier, uint256 nonce, uint64 expiresAtMin, uint256[5] memory proof, uint256 actionId) =
+            _chopProof(ctx);
 
         _requireFresh(expiresAtMin);
         bytes32 id = proofId(nullifier, nonce);
@@ -196,7 +276,7 @@ abstract contract WorldIdGuard {
         // Reverts on failure. signalHash is derived, never taker-supplied.
         WORLD_ID_VERIFIER.verify(
             nullifier,
-            WORLD_ID_ACTION,
+            actionId,
             WORLD_ID_RP_ID,
             nonce,
             _signalHash(ctx.query.taker),
@@ -222,8 +302,14 @@ abstract contract WorldIdGuard {
         );
         (uint256 jumpPC, uint64 issuerSchemaId, uint256 genesisMin) = args.parsePolicyWithPC();
 
-        bytes calldata raw = ctx.tryChopTakerArgs(WorldIdGuardArgsBuilder.PROOF_LENGTH);
-        if (raw.length < WorldIdGuardArgsBuilder.PROOF_LENGTH) return; // no proof: open tier
+        bytes calldata raw = ctx.tryChopTakerArgs(WorldIdGuardArgsBuilder.PROOF_HEAD_LENGTH);
+        if (raw.length < WorldIdGuardArgsBuilder.PROOF_HEAD_LENGTH) return; // no proof: open tier
+
+        // The action is chopped even when it turns out to be unusable, so that the
+        // taker-args cursor lands in the same place either way. Leaving it unconsumed
+        // would hand the following instruction the action bytes as its own payload.
+        bytes calldata action = ctx.tryChopTakerArgs(raw.parseActionLength());
+        if (!_isActionAllowed(action)) return; // wrong action: open tier
 
         (uint256 nullifier, uint256 nonce, uint64 expiresAtMin, uint256[5] memory proof) = raw.parseProof();
 
@@ -233,7 +319,7 @@ abstract contract WorldIdGuard {
 
         try WORLD_ID_VERIFIER.verify(
             nullifier,
-            WORLD_ID_ACTION,
+            action.hashToField(),
             WORLD_ID_RP_ID,
             nonce,
             _signalHash(ctx.query.taker),
@@ -277,18 +363,50 @@ abstract contract WorldIdGuard {
         require(_isFresh(expiresAtMin), WorldIdProofExpired(expiresAtMin, block.timestamp));
     }
 
-    /// @dev Consume the fixed-size proof payload, failing loudly if short.
+    /// @dev Is `action` one the maker allows — i.e. does it start with the committed
+    /// prefix?
+    ///
+    /// Compares hashes rather than bytes so the prefix costs one immutable word
+    /// instead of a storage string. The length check is not redundant: without it a
+    /// short action would slice out fewer bytes than the prefix and could not match,
+    /// but `bytes[:n]` with `n > length` reverts with a bare panic rather than
+    /// falling through to the open tier, which would break `_jumpIfHumanTaker`'s
+    /// contract of never reverting.
+    function _isActionAllowed(bytes calldata action) internal view returns (bool) {
+        if (action.length < WORLD_ID_ACTION_PREFIX_LENGTH) return false;
+        if (action.length > WorldIdGuardArgsBuilder.MAX_ACTION_LENGTH) return false;
+        return keccak256(action[:WORLD_ID_ACTION_PREFIX_LENGTH]) == WORLD_ID_ACTION_PREFIX_HASH;
+    }
+
+    /// @dev Consume the proof payload and its action, failing loudly if either is
+    /// short or the action is not allowed. Returns the action already reduced to a
+    /// field element, since that is the only form the verifier accepts.
     function _chopProof(Context memory ctx)
         private
-        pure
-        returns (uint256 nullifier, uint256 nonce, uint64 expiresAtMin, uint256[5] memory proof)
+        view
+        returns (
+            uint256 nullifier,
+            uint256 nonce,
+            uint64 expiresAtMin,
+            uint256[5] memory proof,
+            uint256 actionId
+        )
     {
-        bytes calldata raw = ctx.tryChopTakerArgs(WorldIdGuardArgsBuilder.PROOF_LENGTH);
+        bytes calldata raw = ctx.tryChopTakerArgs(WorldIdGuardArgsBuilder.PROOF_HEAD_LENGTH);
         require(
-            raw.length == WorldIdGuardArgsBuilder.PROOF_LENGTH,
-            WorldIdProofMissing(raw.length, WorldIdGuardArgsBuilder.PROOF_LENGTH)
+            raw.length == WorldIdGuardArgsBuilder.PROOF_HEAD_LENGTH,
+            WorldIdProofMissing(raw.length, WorldIdGuardArgsBuilder.PROOF_HEAD_LENGTH)
         );
-        return raw.parseProof();
+
+        uint256 actionLength = raw.parseActionLength();
+        bytes calldata action = ctx.tryChopTakerArgs(actionLength);
+        // `tryChopTakerArgs` clamps to what is left rather than reverting, so a
+        // truncated action arrives as a short slice and must be caught here.
+        require(action.length == actionLength, WorldIdProofMissing(action.length, actionLength));
+        require(_isActionAllowed(action), WorldIdActionNotAllowed());
+
+        (nullifier, nonce, expiresAtMin, proof) = raw.parseProof();
+        actionId = action.hashToField();
     }
 
     /// @dev Mark a proof used — but only outside a staticcall, or `quote()`
