@@ -21,6 +21,8 @@ const OPCODES = {
   0x70: { name: "FlatFeeAmountIn", note: "fee on the input leg" },
 };
 
+import { CREDENTIALS } from "./chain";
+
 const FEE_DENOMINATOR = 1_000_000_000n; // Fee.BPS is 1e9, not 10_000 (FRICTION F-11)
 
 function hexToBytes(hex) {
@@ -85,6 +87,32 @@ function tryDecode(bytes, start) {
   return rows.length >= 2 && rows.some((r) => r.opcode === 0x50) ? rows : null;
 }
 
+/**
+ * Name a credential by its `issuerSchemaId`, read from the guard's own policy args.
+ *
+ * Derived from CREDENTIALS so there is one place that knows 9303 is a passport. An id we do
+ * not recognise is shown as a bare number rather than guessed at — the ids are a namespace
+ * World ID owns, and new ones can appear without us knowing what they mean.
+ */
+function credentialName(schemaId) {
+  const known = Object.values(CREDENTIALS).find((c) => BigInt(c.schemaId) === schemaId);
+  return known ? `schema ${schemaId} · ${known.idkit.replace(/_/g, " ")}` : `schema ${schemaId}`;
+}
+
+/** The guard's policy: issuerSchemaId(8) ‖ credentialGenesisIssuedAtMin(32), after any jumpPC. */
+function describePolicy(args, offset) {
+  if (args.length < offset + 8) return null;
+  const schemaId = args
+    .slice(offset, offset + 8)
+    .reduce((acc, b) => (acc << 8n) | BigInt(b), 0n);
+  const genesis = args
+    .slice(offset + 8, offset + 40)
+    .reduce((acc, b) => (acc << 8n) | BigInt(b), 0n);
+  // genesisMin is almost always 0 (unconstrained); when it is not, it changes who can pass, so
+  // it belongs on screen.
+  return genesis > 0n ? `${credentialName(schemaId)} · genesis ≥ ${genesis}` : credentialName(schemaId);
+}
+
 function describe(opcode, args) {
   if (opcode === 0x70 && args.length === 4) {
     const ppb = BigInt(`0x${Array.from(args, (b) => b.toString(16).padStart(2, "0")).join("")}`);
@@ -94,7 +122,14 @@ function describe(opcode, args) {
     return `${pct.toFixed(2)}%`;
   }
   if (opcode === 0x03 && args.length === 2) return `→ pc ${(args[0] << 8) | args[1]}`;
-  if (opcode === 0x33 && args.length >= 2) return `→ pc ${(args[0] << 8) | args[1]} if human`;
-  if (opcode === 0x27) return "schema 1 · proof of human";
+  // Both guards carry their credential in policy args; read it rather than assuming. This
+  // said "schema 1 · proof of human" unconditionally, which mislabelled program D's second
+  // guard as a duplicate of its first once passport became a real option.
+  if (opcode === 0x33 && args.length >= 2) {
+    const target = `→ pc ${(args[0] << 8) | args[1]}`;
+    const policy = describePolicy(args, 2);
+    return policy ? `${target} if ${policy}` : `${target} if human`;
+  }
+  if (opcode === 0x27) return describePolicy(args, 0) ?? "proof required";
   return null;
 }
