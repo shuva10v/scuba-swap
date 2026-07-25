@@ -64,7 +64,21 @@ async function loadSigningKey() {
   return cachedKey;
 }
 
-function allowedActions() {
+/**
+ * Action prefixes this endpoint will sign for.
+ *
+ * Prefixes rather than exact strings, because World ID issues at most one proof
+ * per (identity, rp, action): a demo on one fixed action lets each person gear up
+ * exactly once, ever. The router commits to a prefix and each dive names
+ * `<prefix>-<suffix>`, so an exact-match allowlist here would reject every real
+ * request while passing the tests.
+ *
+ * Still an allowlist, and still mandatory. The endpoint signs with our RP
+ * identity, so the prefix is what stops it becoming an oracle that lends that
+ * identity to anyone who asks. Keep prefixes specific; a prefix of "" or "a"
+ * would defeat the point entirely.
+ */
+function allowedActionPrefixes() {
   const raw = process.env.ALLOWED_ACTIONS;
   if (!raw) return null; // signals a misconfiguration, handled by the caller
   return raw
@@ -72,6 +86,9 @@ function allowedActions() {
     .map((s) => s.trim())
     .filter(Boolean);
 }
+
+/** Longest action we will sign. Mirrors the guard's MAX_ACTION_LENGTH. */
+const MAX_ACTION_LENGTH = 64;
 
 function reply(statusCode, body) {
   return {
@@ -101,7 +118,7 @@ export async function handler(event) {
     return reply(400, { error: "invalid_json" });
   }
 
-  const allow = allowedActions();
+  const allow = allowedActionPrefixes();
   if (!allow) {
     // Fail closed. An unconfigured allowlist would otherwise make this a signing
     // oracle for arbitrary actions.
@@ -110,11 +127,17 @@ export async function handler(event) {
   }
 
   const { action } = body;
+  const expected = `expected an action starting with one of: ${allow.join(", ")}`;
   if (typeof action !== "string" || action.length === 0) {
-    return reply(400, { error: "action_required", detail: `expected one of: ${allow.join(", ")}` });
+    return reply(400, { error: "action_required", detail: expected });
   }
-  if (!allow.includes(action)) {
-    return reply(403, { error: "action_not_allowed", detail: `expected one of: ${allow.join(", ")}` });
+  // Bounded before the prefix test: the guard refuses to hash an action longer
+  // than this, so signing one would produce a proof no router could accept.
+  if (Buffer.byteLength(action, "utf8") > MAX_ACTION_LENGTH) {
+    return reply(400, { error: "action_too_long", detail: `max ${MAX_ACTION_LENGTH} bytes` });
+  }
+  if (!allow.some((prefix) => action.startsWith(prefix))) {
+    return reply(403, { error: "action_not_allowed", detail: expected });
   }
 
   let ttl = Number(body.ttl ?? DEFAULT_TTL);

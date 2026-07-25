@@ -54,6 +54,37 @@ test("refuses an action that is not allowlisted", async () => {
   assert.equal(JSON.parse(res.body).error, "action_not_allowed");
 });
 
+test("signs a suffixed action under an allowlisted prefix", async () => {
+  // The case the demo actually depends on. World ID issues one proof per
+  // (identity, rp, action), so every dive names a fresh `<prefix>-<suffix>`. An
+  // exact-match allowlist would pass the test above and reject every real request.
+  const handler = await loadHandler({ RP_SIGNING_KEY: TEST_KEY, ALLOWED_ACTIONS: "scubaswap" });
+
+  const res = await handler(post({ action: "scubaswap-1769300000" }));
+  assert.equal(res.statusCode, 200);
+  assert.ok(JSON.parse(res.body).signature, "no signature returned");
+});
+
+test("a prefix must match at the start, not anywhere", async () => {
+  // Otherwise `evil-scubaswap` would borrow our RP identity for someone else's app.
+  const handler = await loadHandler({ RP_SIGNING_KEY: TEST_KEY, ALLOWED_ACTIONS: "scubaswap" });
+
+  const res = await handler(post({ action: "evil-scubaswap-1" }));
+  assert.equal(res.statusCode, 403);
+  assert.equal(JSON.parse(res.body).error, "action_not_allowed");
+});
+
+test("refuses an action longer than the guard will hash", async () => {
+  // Signing one would mint a proof no router could accept: the guard caps the
+  // action at 64 bytes, so a longer one is rejected on-chain after the user has
+  // already burned a liveness check on it.
+  const handler = await loadHandler({ RP_SIGNING_KEY: TEST_KEY, ALLOWED_ACTIONS: "scubaswap" });
+
+  const res = await handler(post({ action: `scubaswap-${"x".repeat(64)}` }));
+  assert.equal(res.statusCode, 400);
+  assert.equal(JSON.parse(res.body).error, "action_too_long");
+});
+
 test("fails CLOSED when the allowlist is unset", async () => {
   // The important one. An unconfigured allowlist must not mean "sign anything" —
   // that would lend our RP identity to any caller.
