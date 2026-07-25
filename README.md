@@ -287,26 +287,26 @@ guard gates real Aqua swaps on a World Chain fork. 43/43 tests green.
 
 ### Phase 4 — Strategies A/B/C, invariants, gas (~5h)
 
-- [ ] `ScubaStrategyBuilders` extending the repo's `AquaStrategyBuilders`
-- [ ] Program A (open), B (tiered), C (human-only) built with `ProgramBuilder`
-- [ ] All three shipped against **one** Aqua balance; test they coexist
-- [ ] B: unverified taker pays 30bps, verified taker pays 5bps, same block
-- [ ] C: unverified taker reverts, verified taker succeeds
-- [ ] `MockWorldIDRouter` — accepts any proof, so tests can mint **distinct
-      nullifiers per swap**. The World ID router is a constructor immutable, so
-      this needs *no* test-only branch in `WorldIdGuard`: invariant runs point at
-      the mock, fork e2e runs point at the real `0x163b…`.
-- [ ] `CoreInvariants.assertAllInvariantsWithConfig` on A, B, C
+- [x] `ScubaStrategyBuilders` extending the repo's `AquaStrategyBuilders`
+- [x] Program A (open), B (tiered), C (human-only) built with `ProgramBuilder`
+- [x] All three shipped against **one** Aqua balance; test they coexist
+- [x] B: unverified taker pays 30bps, verified taker pays 5bps, same block
+- [x] C: unverified taker reverts, verified taker succeeds
+- [x] `MockWorldIDVerifier` — keys on the full public-input tuple, so tests
+      mint a **fresh proof per swap** (`_executeSwap`). The verifier is a
+      constructor immutable, so this needs *no* test-only branch in the guard.
+- [x] `CoreInvariants.assertAllInvariantsWithConfig` on A, B, C
       (note: `assertQuoteSwapConsistencyInvariant` is the one that matters here)
-- [ ] Gas snapshot: program A vs C (proof overhead) → `snapshots/`
-- [ ] `docs/PROGRAMS.md`-style writeup of the three programs
+- [x] Gas snapshot: program A vs C (proof overhead) → `snapshots/`
+- [x] `docs/PROGRAMS.md`-style writeup of the three programs
 
 > **Why the mock is load-bearing:** one proof = one swap, and we have exactly one
 > real fixture. The invariant suite performs many swaps per run (additivity,
 > monotonicity, batch), so it cannot run on real proofs. Real fixture → dedicated
 > e2e fork tests. Mock → invariants. Same contract bytecode either way.
 
-**Exit:** the demo-able artifact.
+**Exit:** ✅ 50/50 tests green. Invariants pass on both the open and the guarded
+program; guard overhead measured at ~26k gas.
 
 ### Phase 5 — Frontend: **STOP AND DISCUSS** (~4h)
 

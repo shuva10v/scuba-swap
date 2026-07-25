@@ -70,10 +70,17 @@ abstract contract WorldChainForkBase is Test {
     address internal maker;
     address internal owner;
 
+    /// @dev Pinned rather than `latest`, for two reasons. Foundry only caches
+    /// RPC responses for a pinned block, and the invariant suite makes enough
+    /// calls to get HTTP 429'd off a public endpoint without it. It also keeps
+    /// `block.timestamp` stable, which matters because the guard's freshness
+    /// check is time-dependent.
+    uint256 internal constant PINNED_BLOCK = 32_820_398;
+
     function setUp() public virtual {
-        // Latest block: v4 proofs are short-lived, so a pinned historical block
-        // would put every fixture far outside its own validity window.
-        vm.createSelectFork(vm.envOr("WORLDCHAIN_RPC_URL", string("https://worldchain-mainnet.g.alchemy.com/public")));
+        vm.createSelectFork(
+            vm.envOr("WORLDCHAIN_RPC_URL", string("https://worldchain.drpc.org")), PINNED_BLOCK
+        );
 
         aqua = new Aqua();
         maker = makeAddr("maker");

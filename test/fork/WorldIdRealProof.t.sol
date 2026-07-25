@@ -53,7 +53,7 @@ contract WorldIdRealProofTest is Test {
 
     function setUp() public {
         vm.createSelectFork(
-            vm.envOr("WORLDCHAIN_RPC_URL", string("https://worldchain-mainnet.g.alchemy.com/public")), PINNED_BLOCK
+            vm.envOr("WORLDCHAIN_RPC_URL", string("https://worldchain.drpc.org")), PINNED_BLOCK
         );
         verifier = IWorldIDVerifier(WORLD_ID_V4_STAGING);
 

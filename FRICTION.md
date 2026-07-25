@@ -162,6 +162,26 @@ A `view`-declared `quote` would have removed the need for `asView()` entirely
 (see F-03); the accessor exists only to paper over `quote` not being `view`, and
 this is now the third bug traceable to it.
 
+### F-14 — The invariant suite's defaults assume both tokens share decimals
+`CoreInvariants` is otherwise a pleasure to reuse — abstract, one `_executeSwap`
+hook, configurable. But its defaults are written for an 18/18 pair, and a
+WETH(18)/USDC(6) pool trips two of them:
+
+- `symmetryTolerance: 2` (wei). An exact-out quote quantises to whole USDC
+  units, so the round trip exactIn -> exactOut -> exactIn cannot recover the
+  input more precisely than one output quantum expressed in input terms — about
+  2.5e8 wei at 4000 USDC/WETH, eight orders of magnitude above the default.
+- `testAmountsExactOut: []` falls back to reusing `testAmounts`. Those are
+  denominated in the **input** token, so a pool holding 1e12 USDC gets asked to
+  quote 1e18 units out. That surfaces as a bare
+  `panic: arithmetic underflow or overflow (0x11)` from inside the VM, with no
+  indication that the amount was the problem.
+
+Neither is a bug in the suite, and both are configurable. But nothing in the
+config struct's comments hints that the defaults are decimals-specific, and the
+second failure mode in particular sends you looking for an overflow in your own
+instruction. Worth a note in `TESTING.md` next to the tolerance defaults.
+
 ## World ID
 
 ### W-01 — A v3 proof carries no liveness or freshness signal
