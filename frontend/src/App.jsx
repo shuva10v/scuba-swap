@@ -504,7 +504,14 @@ export default function App() {
       // that immediately is more honest than leaving it on until it expires.
       // Spend exactly what the program consumed, in program order. A surface swap spends
       // nothing; the reef spends both.
-      for (const key of programs[programKey].needs) {
+      //
+      // Then surface. The gear that earned this dive is gone — each proof is single-use — so
+      // leaving the selection at depth would point the next swap at a tier it can no longer
+      // reach, and the CTA would offer a dive that reverts. Coming up is also the honest
+      // reading of the metaphor: you surface between dives and re-gear to go back down.
+      const spent = programs[programKey].needs;
+      if (spent.length > 0) setTier("surface");
+      for (const key of spent) {
         setProofs((prev) => {
           const next = { ...prev };
           delete next[key];

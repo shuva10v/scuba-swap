@@ -79,9 +79,17 @@ Two real swaps from the same non-maker account against the same router:
 | Taker args | 22 B — traits only | 275 B — **proof attached** |
 | Gas | **114,721** | **514,451** |
 
+A third, on program D — [`0x1f98fde9…`](https://worldscan.org/tx/0x1f98fde9dd6da8c25e55340af4edf87f911abfdc70499f31c8117c543d07a096) —
+carries **two** proofs in 528 bytes of taker args and costs **838,297** gas, pricing at
+3,999.59 per `dWETH` against the 3,984.03 open quote. The two payloads name different actions
+(`scubaswap-1785014247` and `scubaswap-1785015059`), which is the design working as intended:
+one World App round trip each, since both credentials in a single request would share a
+nullifier and collide on the spent set.
+
 - **399,730 gas** is the on-chain Groth16 verification, within ~1% of the figure the
   test suite predicted. It is the honest cost of the design, and the argument for the
-  tier split: the surface stays cheap for everyone.
+  tier split: the surface stays cheap for everyone. The second verification adds 323,846 —
+  cheaper than the first, because the fixed cost of touching the verifier is already paid.
 - The proven swap priced at **3,994.01** per `dWETH` against a **3,984.03** open quote —
   the guard verified, the jump was taken, and the discount is real.
 - The 275 bytes are exactly the layout: proof (232) ‖ action length (1) ‖ action (20)
