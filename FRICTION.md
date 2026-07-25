@@ -513,6 +513,9 @@ None of this is discoverable from the docs, which only ever show one-shot action
 (`verify-humanity`, `claim-airdrop`). A repeatable action is a different design
 problem and deserves a page.
 
+It also has a first-class primitive — sessions — which we did not use, for reasons
+that are their own finding. See W-14.
+
 ### W-12 — The client can widen `expires_at_min`, which quietly weakens an on-chain freshness check
 The explicit request form takes three constraints:
 
@@ -575,3 +578,57 @@ integrator can tell which of five identical-looking failures they have.
 
 The app now names both simulators in its environment tooltip, because the failure is
 un-debuggable from the client and the only defence is knowing in advance.
+
+### W-14 — Sessions are the right primitive for a repeatable action, and the docs argue with themselves about verifying them on chain
+Everything in W-11 is a workaround. The primitive that actually fits a repeatable
+action is a **session**, and the docs say so:
+
+> Rule of thumb: use `nullifier` for one-time uniqueness and `session_id` for
+> continuity. — *4.0 migration guide*
+
+A swap is continuity, not a one-time claim. And the mechanism is precisely what we
+ended up hand-rolling. From the verify endpoint's own reference:
+
+> `responses[].session_nullifier`: Tuple `[nullifier, action]`
+
+The action is **generated per proof**. That is exactly our `<prefix>-<timestamp>`
+scheme, except done by the protocol, with `session_id` carrying the continuity our
+prefix check only approximates. We reimplemented a protocol feature by hand.
+
+Two things stopped us adopting it, and neither is a capability gap so much as a
+documentation one.
+
+**The session request surface is narrower than a plain request.** `IDKitSessionConfig`
+has no `action` (generated — fine) but also no `allow_legacy_proofs`, and sessions do
+not currently let you customise the request the way `IDKit.request` does — an identity
+check cannot be expressed through a session today. For ScubaSwap that is
+disqualifying rather than cosmetic: the mask and tank on our roadmap are attestations,
+so committing to sessions now would mean committing to a primitive that cannot express
+where the design is going.
+
+**Whether a session proof can be verified on chain at all is genuinely unclear.** The
+page that owns on-chain verification does not mention sessions once. Its v4 section is
+titled *"Verifying Uniqueness proofs in `WorldIDVerifier.sol`"* and says:
+
+> For v4 uniqueness proofs, call `verify(...)` on the `WorldIDVerifier` proxy and
+> store used nullifiers to enforce one-human-one-action semantics in your contract.
+
+Read plainly, on-chain verification is for uniqueness proofs and sessions are an
+API-only construct. But the protocol repo's own sessions page states session proofs
+are verifiable through the same circuits — which would mean the same `verify()` entry
+point works and the page above is simply silent rather than exclusive. Those cannot
+both be the whole story, and an integrator choosing a primitive has no way to tell
+which is true short of deploying a contract and trying it.
+
+That silence is what actually decided it. We had a working on-chain path for
+uniqueness proofs, verified against the live verifier, and a documented-nowhere path
+for the primitive designed for our use case. On a deadline you take the one you can
+test.
+
+Two fixes, both small:
+
+- State on the on-chain verification page whether session proofs go through
+  `WorldIDVerifier.verify(...)`, and if so, what occupies the `action` argument —
+  presumably `session_nullifier[1]`, the generated action, but that is inference.
+- Give sessions the same constraint surface as requests, so choosing continuity does
+  not mean giving up credential types.
