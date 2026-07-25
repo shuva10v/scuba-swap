@@ -47,6 +47,10 @@ const EVENT_URL = "https://ethglobal.com/events/lisbon2026";
 const EVENT_LOGO = "https://ethglobal.storage/events/lisbon2026/logo/default";
 const EVENT_LOGO_HEIGHT = 36;
 const EVENT_LOGO_WIDTH = Math.round((EVENT_LOGO_HEIGHT * 624) / 333);
+const AQUA_URL = "https://1inch.com/aqua";
+const WORLD_ID_URL = "https://world.org/world-id";
+/** Block explorer for World Chain. Only meaningful for a mainnet deployment. */
+const EXPLORER = "https://worldscan.org";
 
 // "Verification unavailable / contact the website owner" is World App refusing the
 // REQUEST rather than the proof, and the response payload is encrypted to the
@@ -69,6 +73,17 @@ function initialEnvironment() {
   if (ENV_OVERRIDE && ENVIRONMENTS[ENV_OVERRIDE]) return ENV_OVERRIDE;
   return DEFAULT_ENVIRONMENT;
 }
+
+/**
+ * Links inside metadata rows. Underlined so they are discoverable, but colour is
+ * inherited so they do not shout over the label they sit in.
+ */
+const SUBTLE_LINK = {
+  color: "inherit",
+  textDecoration: "underline",
+  textDecorationColor: "rgba(109,135,146,0.5)",
+  textUnderlineOffset: 2,
+};
 
 /** Mirrors WorldIdGuard.PROOF_FRESHNESS_WINDOW (15 minutes). */
 const FRESHNESS_WINDOW_MS = 15 * 60 * 1000;
@@ -259,7 +274,14 @@ export default function App() {
       promotedRef.current = true;
       setTier("human");
     }
-    if (!proof) promotedRef.current = false;
+    if (!proof) {
+      promotedRef.current = false;
+      // Losing the proof locks the human band, so the selection cannot stay there.
+      // Otherwise an expiring proof would leave you pointed at a tier you can no
+      // longer choose, with the dive computer describing a program the CTA would
+      // route through at the open fee.
+      setTier((t) => (t === "human" ? "surface" : t));
+    }
   }, [proof]);
 
   const programKey = tier;
@@ -432,7 +454,13 @@ export default function App() {
               className="mono"
               style={{ fontSize: 12, letterSpacing: "0.14em", color: "var(--locked)", marginTop: 6, textTransform: "uppercase" }}
             >
-              1inch Aqua × World ID
+              <a href={AQUA_URL} target="_blank" rel="noreferrer noopener" style={SUBTLE_LINK}>
+                1inch Aqua
+              </a>{" "}
+              ×{" "}
+              <a href={WORLD_ID_URL} target="_blank" rel="noreferrer noopener" style={SUBTLE_LINK}>
+                World ID
+              </a>
             </div>
           </div>
         </div>
@@ -503,26 +531,28 @@ export default function App() {
             </div>
           )}
 
-          {/* Inline SVG rather than an icon font or a hosted image — one fewer request
-              for a 300-byte glyph, and it inherits currentColor. */}
-          <a
-            href={REPO_URL}
-            target="_blank"
-            rel="noreferrer noopener"
-            aria-label="ScubaSwap on GitHub"
-            title="Source on GitHub"
-            style={{ display: "flex", alignItems: "center", color: "var(--locked)" }}
-          >
-            <svg width="19" height="19" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-2.92-.88-2.92-2.9 0-.58.21-1.06.55-1.43-.05-.13-.24-.66.05-1.37 0 0 .59-.19 1.94.72a5.4 5.4 0 0 1 1.47-.2c.5 0 1 .07 1.47.2 1.35-.92 1.94-.72 1.94-.72.29.71.1 1.24.05 1.37.34.37.55.85.55 1.43 0 2.03-1.15 2.7-2.93 2.9.3.26.57.77.57 1.56 0 1.11-.01 2.01-.01 2.29 0 .21.15.46.55.38A7.99 7.99 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
-            </svg>
-          </a>
-
           {/* Explicitly labelled: an unlabelled truncated address sitting next
               to a Connect button reads as a connected account, which this is
               not — it is the contract the UI is pointed at. */}
           <span className="mono" style={{ fontSize: 12, color: "var(--locked)", textAlign: "right", lineHeight: 1.5 }}>
-            <span style={{ opacity: 0.7 }}>router</span> {router.slice(0, 6)}…{router.slice(-4)}
+            <span style={{ opacity: 0.7 }}>router</span>{" "}
+            {/* Linked only on mainnet: worldscan has no view of a local fork, so on the
+                fork this would be a link to an address the explorer has never seen. */}
+            {IS_MAINNET ? (
+              <a
+                href={`${EXPLORER}/address/${router}`}
+                target="_blank"
+                rel="noreferrer noopener"
+                title={router}
+                style={{ ...SUBTLE_LINK, color: "var(--midwater)" }}
+              >
+                {router.slice(0, 6)}…{router.slice(-4)}
+              </a>
+            ) : (
+              <span title={router}>
+                {router.slice(0, 6)}…{router.slice(-4)}
+              </span>
+            )}
             <br />
             <span style={{ opacity: 0.7 }}>{IS_MAINNET ? "World Chain" : "World Chain fork"} · chain {DEMO.chainId}</span>
           </span>

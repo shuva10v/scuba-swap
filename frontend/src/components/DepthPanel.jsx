@@ -392,8 +392,14 @@ export default function DepthPanel({
           {BANDS.map((band, i) => {
             const q = quotes[band.key];
             const isActive = tier === band.key;
-            const locked = band.key === "reef" && !reefReachable;
+            // The human tier is locked without a wetsuit, and that is a correction
+            // rather than a restriction. `JumpIfHumanTaker` falls through for an
+            // unproven taker, so selecting this band with no proof routed through the
+            // tiered program at the *open* fee — the header said 0.05% and the chain
+            // charged 0.30%. Locking it makes the gate match the pricing.
+            const locked = band.key === "human" ? !verified : band.key === "reef" ? !reefReachable : false;
             const selectable = !locked;
+            const missingGear = band.key === "human" ? ["Wetsuit"] : ["Mask", "Tank"];
             const delta = q?.amountOut !== undefined && activeOut !== undefined ? q.amountOut - activeOut : null;
 
             return (
@@ -578,6 +584,15 @@ export default function DepthPanel({
                       )}
                     </div>
 
+                    {/* A locked human band still quotes, but at the open fee — the
+                        guard fell through. Saying so beats showing a 0.05% header over
+                        a 0.30% number. */}
+                    {band.key === "human" && locked && amountIn && q?.amountOut !== undefined && (
+                      <div className="mono" style={{ fontSize: 12, color: band.dim, marginTop: 10 }}>
+                        priced at the open fee — a wetsuit unlocks {programs.human.feeLabel}
+                      </div>
+                    )}
+
                     {/* What the tiered band actually does, stated rather than implied. */}
                     {band.key === "human" && (
                       <div
@@ -599,17 +614,18 @@ export default function DepthPanel({
                         <div>
                           <div style={{ letterSpacing: ".1em" }}>PROOF</div>
                           <div style={{ color: "#fff", marginTop: 5 }}>
-                            {verified ? "Wetsuit · spent on dive" : "None · prices as open"}
+                            {verified ? "Wetsuit · spent on dive" : "Required · gear up first"}
                           </div>
                         </div>
                       </div>
                     )}
 
-                    {/* The gear the reef waits on. Accurate: v1 attests personhood
-                        only, so neither exists yet. */}
-                    {band.key === "reef" && (
-                      <div className="mono" style={{ display: "flex", gap: 10, marginTop: 16 }}>
-                        {["Mask", "Tank"].map((g) => (
+                    {/* The gear this depth is waiting on. Accurate in both cases: v1
+                        attests personhood only, so a wetsuit is earnable and the
+                        attestations are not. */}
+                    {locked && (
+                      <div className="mono" style={{ display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" }}>
+                        {missingGear.map((g) => (
                           <span
                             key={g}
                             style={{ fontSize: 12, border: "1px solid #ffffff59", borderRadius: 7, padding: "6px 10px" }}
