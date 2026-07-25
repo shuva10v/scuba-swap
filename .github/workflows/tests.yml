@@ -69,8 +69,12 @@ jobs:
           restore-keys: forge-rpc-
       - name: forge test (fork)
         env:
-          MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
-          WORLDCHAIN_RPC_URL: ${{ secrets.WORLDCHAIN_RPC_URL }}
+          # Falls back to the public endpoint *here* rather than relying on the Solidity
+          # `vm.envOr` default. An absent secret expands to the empty string, and envOr
+          # returns that empty string — the variable is set, just to nothing — so the
+          # default never applies and every fork suite died with "invalid rpc url: ".
+          MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL || 'https://ethereum-rpc.publicnode.com' }}
+          WORLDCHAIN_RPC_URL: ${{ secrets.WORLDCHAIN_RPC_URL || 'https://worldchain.drpc.org' }}
         # Retried once: the failure mode here is a rate-limited public endpoint, and a
         # single retry distinguishes that from a real regression without hiding one.
         run: forge test --match-path 'test/fork/*' -vv || forge test --match-path 'test/fork/*' -vv

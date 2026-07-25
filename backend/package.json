@@ -5,7 +5,7 @@
   "type": "module",
   "description": "RP signing service for ScubaSwap. Holds the World ID signing key; signs proof requests so World App will honour them.",
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test test/*.test.mjs",
     "dev": "node src/local-server.mjs"
   },
   "dependencies": {
