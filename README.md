@@ -2,6 +2,8 @@
 
 > EthGlobal Lisbon hackathon project.
 
+[![tests](https://github.com/shuva10v/scuba-swap/actions/workflows/tests.yml/badge.svg)](https://github.com/shuva10v/scuba-swap/actions/workflows/tests.yml)
+
 Two new SwapVM instructions that gate — and price — a swap on a **World ID proof of
 personhood**, so one maker's liquidity can serve several markets at once:
 

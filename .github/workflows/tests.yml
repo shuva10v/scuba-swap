@@ -1,0 +1,158 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch makes the first run's result irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FOUNDRY_PROFILE: default
+
+jobs:
+  # Contracts that need no network. Fast, deterministic, and the job that should gate a
+  # merge — the fork suites below can fail for reasons that have nothing to do with a diff.
+  contracts:
+    name: contracts (offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # Solidity dependencies are npm git refs (swap-vm pinned to a commit, not a tag —
+      # see FRICTION F-10), so the Solidity build needs an npm install first.
+      - run: npm ci
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: forge build
+        run: forge build --sizes
+      - name: forge test (no fork)
+        run: forge test --no-match-path 'test/fork/*' -vv
+
+  # The fork suites: our router against canonical Aqua on Ethereum, and our encoding
+  # against the live World ID verifier on World Chain. These are the tests that prove the
+  # integration rather than the logic, so they are worth running in CI even though they
+  # depend on someone else's RPC.
+  #
+  # Public endpoints by default; set MAINNET_RPC_URL / WORLDCHAIN_RPC_URL as repository
+  # secrets to use dedicated ones. Not a required check, because a rate-limited public RPC
+  # failing is not a signal about the commit.
+  fork:
+    name: contracts (fork)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      # Both World Chain suites fork at a pinned block, so the RPC responses are stable and
+      # worth caching between runs. The Ethereum suite forks at latest and is not cached.
+      - name: cache forge fork data
+        uses: actions/cache@v4
+        with:
+          path: ~/.foundry/cache/rpc
+          key: forge-rpc-${{ hashFiles('test/fork/**/*.sol') }}
+          restore-keys: forge-rpc-
+      - name: forge test (fork)
+        env:
+          MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
+          WORLDCHAIN_RPC_URL: ${{ secrets.WORLDCHAIN_RPC_URL }}
+        # Retried once: the failure mode here is a rate-limited public endpoint, and a
+        # single retry distinguishes that from a real regression without hiding one.
+        run: forge test --match-path 'test/fork/*' -vv || forge test --match-path 'test/fork/*' -vv
+
+  # The RP signing service. `signRequest` is implemented from the spec and pinned against
+  # every published vector including exact signature bytes, so this suite is the thing that
+  # would catch a signing regression before World App silently refuses a request.
+  backend:
+    name: backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+        working-directory: backend
+      - run: npm test
+        working-directory: backend
+
+  # The frontend build, plus the check that matters more than the build: that the shared
+  # encoder still agrees with Solidity.
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # Real deployment configs are gitignored (per-machine, and rewritten by every
+      # deploy), so CI builds against the committed example. This also means the example
+      # cannot silently rot: if its shape stops satisfying the frontend, this job fails.
+      - name: use the example deployment config
+        run: cp deployments/worldchain.example.json deployments/demo.json
+
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+
+      # The bundle must actually contain the deployment it was built from. Catches the
+      # class of bug where a config change does not reach the artefact — which is exactly
+      # what deploy-frontend.sh checks before publishing.
+      - name: assert the config reached the bundle
+        run: |
+          set -euo pipefail
+          bundle=$(ls frontend/dist/assets/index-*.js | head -1)
+          for addr in $(python3 -c "
+          import json
+          d = json.load(open('deployments/worldchain.example.json'))
+          print(' '.join(v['router'] for v in d['environments'].values()))"); do
+            grep -qi "$addr" "$bundle" || { echo "::error::router $addr missing from the bundle"; exit 1; }
+          done
+          echo "both routers present in $(basename "$bundle")"
+
+  # The encoder is shared between the frontend and the contracts, and the vectors that pin
+  # them together are generated. A committed fixture that no longer matches its generator
+  # means the cross-language test is asserting against a stale transcription — which would
+  # pass while the two implementations drift.
+  encoder-vectors:
+    name: encoder vectors are current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: regenerate and diff
+        run: |
+          node packages/sdk/generate-vectors.mjs
+          git diff --exit-code -- test/fixtures/encoding-vectors.json \
+            || { echo "::error::test/fixtures/encoding-vectors.json is stale — re-run node packages/sdk/generate-vectors.mjs and commit"; exit 1; }
+      - name: forge test (encoding agreement)
+        run: forge test --match-path 'test/EncodingVectors.t.sol' -vv

@@ -23,6 +23,10 @@ deployments/worldchain.json
 # Per-environment configs. These are the source of truth the merged config is derived
 # from, and just as machine-specific.
 deployments/worldchain-*.json
+# ...but the example IS committed: the frontend cannot build without a config, so without
+# it neither CI nor anyone cloning the repo can produce a bundle. It holds only public
+# on-chain addresses.
+!deployments/worldchain.example.json
 infra/cdk.out/
 
 # CDK context cache: embeds the AWS account id and hosted zone id in its lookup
