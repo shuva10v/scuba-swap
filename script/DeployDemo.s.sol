@@ -285,6 +285,13 @@ contract DeployDemo is Script {
         // mistake that produced a page where nothing worked and nothing said why.
         // chainId cannot disambiguate — an anvil fork of World Chain also reports 480.
         vm.serializeString(root, "rpcUrl", vm.envOr("DEPLOYMENT_RPC_URL", string("")));
+
+        // Carried through rather than re-derived. The faucet is deployed by its own script
+        // against the token, so it outlives a router redeploy — but this script rewrites the
+        // config wholesale, which silently dropped it the first time the routers were
+        // replaced and took the claim button off the live site with it.
+        address faucet = vm.envOr("DEPLOYMENT_FAUCET", address(0));
+        if (faucet != address(0)) vm.serializeAddress(root, "faucet", faucet);
         vm.serializeAddress(root, "tokenA", tokenA);
         vm.serializeAddress(root, "tokenB", tokenB);
 

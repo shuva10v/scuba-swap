@@ -45,8 +45,8 @@ be demonstrated without a redeploy.
 
 | | Address |
 | --- | --- |
-| Router (production verifier) | [`0x19C9bBd1152d9EFf9eDDE167A532f57014775356`](https://worldscan.org/address/0x19C9bBd1152d9EFf9eDDE167A532f57014775356) |
-| Router (staging verifier) | [`0xBCA52a9eC487F82E8fc5af06f24e2fbEf97BCf3D`](https://worldscan.org/address/0xBCA52a9eC487F82E8fc5af06f24e2fbEf97BCf3D) |
+| Router (production verifier) | [`0x8B4685249b298383F5a9c24BAd77cfd5AdFa3af1`](https://worldscan.org/address/0x8B4685249b298383F5a9c24BAd77cfd5AdFa3af1) |
+| Router (staging verifier) | [`0x37DFff7873f6094c9747a19bE7FAaC10Af5fB82b`](https://worldscan.org/address/0x37DFff7873f6094c9747a19bE7FAaC10Af5fB82b) |
 | Aqua (self-deployed) | [`0x89EaCa90b4e905BD033f8892c27a27C3e175B113`](https://worldscan.org/address/0x89EaCa90b4e905BD033f8892c27a27C3e175B113) |
 | `WorldIDVerifier` production / staging | `0x00000000009E00F9FE82CfeeBB4556686da094d7` / `0x703a6316c975DEabF30b637c155edD53e24657DB` |
 | `dWETH` / `dUSDC` | [`0x8C8F1D10C96c9C611c963160EDD5BD721F6BACFf`](https://worldscan.org/address/0x8C8F1D10C96c9C611c963160EDD5BD721F6BACFf) / [`0x09C1526a7CbE078378D1F79c5d218030A1C083Dc`](https://worldscan.org/address/0x09C1526a7CbE078378D1F79c5d218030A1C083Dc) |

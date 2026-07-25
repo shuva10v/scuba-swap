@@ -193,7 +193,18 @@ send() { cast send --rpc-url "$RPC" --private-key "$DEPLOYER_PK" "$@" >/dev/null
 if [[ -n "$DWETH_REUSE" ]]; then
   TA="$DWETH_REUSE"; log "reusing dWETH ${TA}"
 else
-  log "deploying demo tokens"
+  # Preserve a faucet from an earlier deploy: it fronts the token, not the router, so replacing
+# routers must not orphan it. Dropped silently the first time and the live claim button went
+# with it.
+EXISTING_FAUCET=""
+if [[ -f deployments/worldchain.json ]]; then
+  EXISTING_FAUCET=$(python3 -c "
+import json
+print(json.load(open('deployments/worldchain.json')).get('faucet') or '')" 2>/dev/null || true)
+  [[ -n "$EXISTING_FAUCET" ]] && log "carrying forward faucet ${EXISTING_FAUCET}"
+fi
+
+log "deploying demo tokens"
   TA=$(create src/demo/DemoToken.sol:DemoToken "ScubaSwap Demo WETH" "dWETH" 18)
   [[ -n "$TA" ]] || die "dWETH deployment failed"
   log "dWETH ${TA}"
@@ -253,7 +264,7 @@ ship_programs() { # <router> <verifier> <out.json>
     TOKEN_A="$T_A" TOKEN_B="$T_B" SHIP_A="$S_A" SHIP_B="$S_B"
     AQUA_ADDRESS="$AQUA" ROUTER_ADDRESS="$r"
     WORLD_ID_ACTION_PREFIX="$ACTION_PREFIX" WORLD_ID_VERIFIER="$v" WORLD_ID_RP_ID="$RP_ID_NUM"
-    DEPLOYMENT_OUT="$out" DEPLOYMENT_RPC_URL="$RPC"
+    DEPLOYMENT_OUT="$out" DEPLOYMENT_RPC_URL="$RPC" DEPLOYMENT_FAUCET="$EXISTING_FAUCET"
   )
   if ! env "${env[@]}" forge script script/DeployDemo.s.sol \
       --rpc-url "$RPC" --broadcast --private-key "$DEPLOYER_PK" >/dev/null 2>&1; then
