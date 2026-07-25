@@ -796,12 +796,25 @@ export default function DepthPanel({
           </button>
         )}
 
-        {surfaceOut !== undefined && humanOut !== undefined && humanOut !== surfaceOut && (
+        {/* Only a real comparison when a wetsuit is on.
+ 
+            Without one, `JumpIfHumanTaker` falls through and the tiered band quotes at
+            the *open* fee — so the difference between the two bands is not 0.30% versus
+            0.05%, it is two 0.30% prices against two separate Aqua balances. Those
+            balances drift apart as they trade (each order hash is its own curve state),
+            so the tiered band can even come out marginally *worse*. Labelling that
+            "available at −10 m" claimed the opposite of the truth: gearing up would
+            improve the price by roughly the fee gap, not cost you two cents. */}
+        {verified && surfaceOut !== undefined && activeOut !== undefined && activeOut !== surfaceOut && (
           <div className="mono" style={{ fontSize: 15, color: "var(--midwater)" }}>
-            {humanOut > surfaceOut ? "+" : "−"}
-            {fmt(humanOut > surfaceOut ? humanOut - surfaceOut : surfaceOut - humanOut, side.buy.decimals)}{" "}
-            {side.buy.symbol}
-            {tier === "human" ? " vs surface" : " available at −10 m"}
+            {activeOut > surfaceOut ? "+" : "−"}
+            {fmt(activeOut > surfaceOut ? activeOut - surfaceOut : surfaceOut - activeOut, side.buy.decimals)}{" "}
+            {side.buy.symbol} vs surface
+          </div>
+        )}
+        {!verified && (
+          <div className="mono" style={{ fontSize: 15, color: "var(--locked)" }}>
+            gear up to price the −10 m tier
           </div>
         )}
       </div>

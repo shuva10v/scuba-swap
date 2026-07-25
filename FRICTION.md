@@ -209,6 +209,39 @@ asymmetry is worth flagging: the ordering constraint is checked loudly
 (`MakerTraitsTokensNotSorted`) while getting the *direction* wrong against a
 correctly sorted pair is silent, and prices a real swap.
 
+### F-16 — One real balance, but one curve state per shipped order
+`aqua.ship` binds an order to `(maker, router, orderHash)`, so shipping three programs
+against the same token pair creates **three independent virtual balances**. The maker's
+real tokens back all of them and never move — that part of the pitch holds, and it is
+the reason a tiered design costs no extra capital. What is easy to miss is that the
+*curve state* is per order, not per pair.
+
+The tiers therefore drift apart as they trade. Measured on our own deployment after a
+handful of swaps:
+
+```
+humanOnly  dUSDC 4,000,000.0000   dWETH 1,000.0000   (untouched)
+open       dUSDC 3,992,039.8844   dWETH 1,002.0001
+tiered     dUSDC 3,992,019.9541   dWETH 1,002.0000
+```
+
+The tiered balance holds ~19.93 fewer dUSDC than the open one against effectively
+identical dWETH — precisely because it has been paying the discount it exists to offer.
+Lower reserve on the output side means a marginally worse price, so an unproven taker
+quoting both bands can find the *discount* tier a couple of cents behind the open one.
+
+Two consequences worth designing around:
+
+- A cross-tier price delta is not a fee comparison. It is a fee comparison plus
+  accumulated divergence between two curves, and after enough volume the second term
+  can dominate the first. Our UI now only shows the delta when a proof is present, where
+  the fee gap is real and large.
+- Nothing rebalances the buckets. A tier that is popular drains its own output reserve
+  and gradually prices itself out, which is self-limiting in a way a single shared
+  reserve would not be. Whether that is a feature depends on the strategy; either way it
+  is not stated anywhere, and "one balance, many programs" reads as though the curve is
+  shared too.
+
 ## World ID
 
 ### W-01 — A v3 proof carries no liveness or freshness signal
