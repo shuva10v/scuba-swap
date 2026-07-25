@@ -22,7 +22,8 @@ import {
   DEMO,
   ENVIRONMENTS,
   IS_MAINNET,
-  PAIR,
+  explorerAddress,
+  sidesFor,
   demoChain,
   freshAction,
   erc20Abi,
@@ -49,8 +50,7 @@ const EVENT_LOGO_HEIGHT = 36;
 const EVENT_LOGO_WIDTH = Math.round((EVENT_LOGO_HEIGHT * 624) / 333);
 const AQUA_URL = "https://1inch.com/aqua";
 const WORLD_ID_URL = "https://world.org/world-id";
-/** Block explorer for World Chain. Only meaningful for a mainnet deployment. */
-const EXPLORER = "https://worldscan.org";
+
 
 // "Verification unavailable / contact the website owner" is World App refusing the
 // REQUEST rather than the proof, and the response payload is encrypted to the
@@ -265,6 +265,10 @@ export default function App() {
   // Gearing up still *promotes* you once — earning the wetsuit and staying at the
   // surface would be a strange default — but never demotes you afterwards.
   const [tier, setTier] = useState("surface");
+  // Which way round the pair is traded. The contract has always supported both — the
+  // direction is one bit of taker traits — it was the UI that pinned it.
+  const [flipped, setFlipped] = useState(false);
+  const side = sidesFor(flipped);
   // Live quotes, reported up by DepthPanel so the dive computer shows the same
   // figures rather than issuing its own calls.
   const [quotes, setQuotes] = useState({});
@@ -286,6 +290,14 @@ export default function App() {
 
   const programKey = tier;
 
+  const onFlip = useCallback(() => {
+    const receiving = quotes[tier]?.amountOut;
+    setFlipped((f) => !f);
+    // Carry the output over so the form stays meaningful. Without this, flipping
+    // WETH→USDC on "1" would ask to sell 1 USDC and quote dust.
+    if (receiving !== undefined) setAmount(formatUnits(receiving, side.buy.decimals));
+  }, [quotes, tier, side.buy.decimals]);
+
   /**
    * The "this dive" summary, straight from the live quotes.
    *
@@ -298,7 +310,7 @@ export default function App() {
     const surfaceOut = quotes.surface?.amountOut;
     if (activeOut === undefined) return null;
     const money = (v) =>
-      Number(formatUnits(v, PAIR.buyDecimals)).toLocaleString(undefined, {
+      Number(formatUnits(v, side.buy.decimals)).toLocaleString(undefined, {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
       });
@@ -313,7 +325,7 @@ export default function App() {
     return { out: money(activeOut), vsSurface };
   })();
   // Guarded programs need the proof in takerArgs; the surface program ignores it.
-  const takerData = buildTakerData({ isExactIn: true, isAToB: PAIR.isAToB, instructionsArgs: proof?.args ?? "0x" });
+  const takerData = buildTakerData({ isExactIn: true, isAToB: side.isAToB, instructionsArgs: proof?.args ?? "0x" });
 
   const gearUp = useCallback(async () => {
     setError(null);
@@ -385,11 +397,11 @@ export default function App() {
       const wallet = walletClientFrom(window.ethereum);
       // parseUnits, not float math: `Number(amount) * 1e18` silently loses the low
       // digits above ~2^53 base units, and the sold side is not always 18dp.
-      const amountIn = parseUnits(String(amount), PAIR.sellDecimals);
+      const amountIn = parseUnits(String(amount), side.sell.decimals);
 
       // Approve once; the router pulls tokenIn and pushes it into Aqua itself.
       const allowance = await publicClient.readContract({
-        address: DEMO.weth,
+        address: side.sell.address,
         abi: erc20Abi,
         functionName: "allowance",
         args: [address, router],
@@ -397,7 +409,7 @@ export default function App() {
       if (allowance < amountIn) {
         const hash = await wallet.writeContract({
           account: address,
-          address: DEMO.weth,
+          address: side.sell.address,
           abi: erc20Abi,
           functionName: "approve",
           args: [router, 2n ** 256n - 1n],
@@ -430,7 +442,9 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [address, amount, programKey, takerData, proof]);
+    // `side` matters: it decides which token is parsed, approved and sold. A stale
+    // closure here would approve one token and swap the other.
+  }, [address, amount, programKey, takerData, proof, side.sell.address, side.sell.decimals]);
 
   return (
     <div style={{ maxWidth: 1560, margin: "0 auto", padding: "28px 32px 44px" }}>
@@ -538,9 +552,9 @@ export default function App() {
             <span style={{ opacity: 0.7 }}>router</span>{" "}
             {/* Linked only on mainnet: worldscan has no view of a local fork, so on the
                 fork this would be a link to an address the explorer has never seen. */}
-            {IS_MAINNET ? (
+            {explorerAddress(router) ? (
               <a
-                href={`${EXPLORER}/address/${router}`}
+                href={explorerAddress(router)}
                 target="_blank"
                 rel="noreferrer noopener"
                 title={router}
@@ -683,6 +697,8 @@ export default function App() {
           tier={tier}
           setTier={setTier}
           onQuotes={setQuotes}
+          side={side}
+          onFlip={onFlip}
         />
 
         <DiveComputer

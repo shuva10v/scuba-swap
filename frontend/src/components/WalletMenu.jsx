@@ -20,6 +20,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { explorerAddress } from "../lib/chain";
+
 const DISCONNECTED_KEY = "scubaswap:disconnected";
 
 export function wasDisconnected() {
@@ -135,6 +137,19 @@ export default function WalletMenu({ address, onConnect, onDisconnect }) {
           <button role="menuitem" onClick={copy} style={item()}>
             {copied ? "Copied" : "Copy address"}
           </button>
+          {/* Only on mainnet — the explorer has no view of a local fork, so on the fork
+              this would link to an account it has never seen. */}
+          {explorerAddress(address) && (
+            <a
+              role="menuitem"
+              href={explorerAddress(address)}
+              target="_blank"
+              rel="noreferrer noopener"
+              style={{ ...item(), display: "block", textDecoration: "none" }}
+            >
+              View on worldscan ↗
+            </a>
+          )}
           <button role="menuitem" onClick={disconnect} style={{ ...item(), color: "var(--coral)" }}>
             Disconnect
           </button>

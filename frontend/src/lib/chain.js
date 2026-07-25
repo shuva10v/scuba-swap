@@ -183,38 +183,73 @@ export const erc20Abi = [
   { type: "function", name: "allowance", stateMutability: "view", inputs: [{ type: "address" }, { type: "address" }], outputs: [{ type: "uint256" }] },
   { type: "function", name: "approve", stateMutability: "nonpayable", inputs: [{ type: "address" }, { type: "uint256" }], outputs: [{ type: "bool" }] },
   { type: "function", name: "decimals", stateMutability: "view", inputs: [], outputs: [{ type: "uint8" }] },
+  { type: "function", name: "symbol", stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
 ];
 
 /**
  * The pair, as roles rather than as sort positions.
  *
- * `isAToB` is a property of the deployment: SwapVM addresses the pair by sorted
- * order, and which of the two tokens sorts first depends entirely on the
- * addresses they landed at. Canonical WETH sorts before USDC on World Chain, so
- * hardcoding `isAToB: true` was correct for the local fork demo and wrong the
- * first time the demo tokens were deployed fresh — it would have sold the 6dp
- * token under a WETH label. The deploy records the roles; read them.
+ * SwapVM addresses the pair by sorted order and picks the direction with a single
+ * `isAToB` bit, so which token you are selling is positional. Which of the two sorts
+ * first depends entirely on the addresses they landed at — canonical WETH sorts before
+ * USDC on World Chain, so hardcoding `isAToB: true` was correct for the fork demo and
+ * wrong the first time the demo tokens were deployed fresh. The deploy records the
+ * roles; read them.
+ *
+ * Symbols come from the deployment too. The demo pair is dWETH/dUSDC, so labelling the
+ * UI "WETH"/"USDC" would name tokens that are not the ones being traded.
  */
-export const PAIR = {
-  sell: demo.weth,
-  buy: demo.usdc,
-  sellDecimals: demo.baseDecimals ?? 18,
-  buyDecimals: demo.quoteDecimals ?? 6,
-  isAToB: demo.weth.toLowerCase() === demo.tokenA.toLowerCase(),
+export const TOKENS = {
+  base: {
+    address: demo.weth,
+    decimals: demo.baseDecimals ?? 18,
+    symbol: demo.baseSymbol ?? "WETH",
+    dot: "var(--hull)",
+  },
+  quote: {
+    address: demo.usdc,
+    decimals: demo.quoteDecimals ?? 6,
+    symbol: demo.quoteSymbol ?? "USDC",
+    dot: "#2775ca",
+  },
 };
+
+/**
+ * Which side is being sold, for a given direction.
+ *
+ * `flipped` sells the quote token instead of the base one. `isAToB` is derived rather
+ * than stored because it means "the token I am selling is tokenA" — a fact about this
+ * deployment's sort order combined with the chosen direction, not a constant.
+ */
+export function sidesFor(flipped) {
+  const sell = flipped ? TOKENS.quote : TOKENS.base;
+  const buy = flipped ? TOKENS.base : TOKENS.quote;
+  return { sell, buy, isAToB: sell.address.toLowerCase() === demo.tokenA.toLowerCase() };
+}
+
+/** Block explorer for World Chain. Only meaningful for a mainnet deployment. */
+export const EXPLORER = "https://worldscan.org";
+
+/**
+ * Explorer link for an address, or null on a local fork — worldscan has no view of a
+ * fork, so linking there would point at an address it has never seen.
+ */
+export function explorerAddress(address) {
+  return IS_MAINNET && address ? `${EXPLORER}/address/${address}` : null;
+}
 
 /**
  * A fresh action for one dive.
  *
- * World ID issues at most one proof per (identity, rp, action), so reusing a
- * single action means a device that refuses to mint a second time — the
- * `nullifier_replayed` dead end. The router commits to a *prefix* instead, so
- * every dive names its own action and gets its own proof.
+ * World ID issues at most one proof per (identity, rp, action), so reusing a single
+ * action means a device that refuses to mint a second time — the `nullifier_replayed`
+ * dead end. The router commits to a *prefix* instead, so every dive names its own
+ * action and gets its own proof.
  *
- * The suffix only has to be unique per identity, and a second-resolution
- * timestamp is: World App requires a fresh liveness check per proof, which takes
- * far longer than a second. It is not a secret and does not need to be
- * unguessable — the nullifier and the taker-bound signal do that work.
+ * The suffix only has to be unique per identity, and a second-resolution timestamp is:
+ * World App requires a fresh liveness check per proof, which takes far longer than a
+ * second. It is not a secret and does not need to be unguessable — the nullifier and
+ * the taker-bound signal do that work.
  */
 export function freshAction() {
   return `${demo.worldIdActionPrefix}-${Math.floor(Date.now() / 1000)}`;

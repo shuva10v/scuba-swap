@@ -45,6 +45,8 @@ const SHARED = [
   "worldIdActionPrefix",
   "worldIdRpId",
   "rpcUrl",
+  "baseSymbol",
+  "quoteSymbol",
 ];
 
 const inputs = pairs.map((pair) => {

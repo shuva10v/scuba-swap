@@ -256,6 +256,11 @@ contract DeployDemo is Script {
         vm.serializeAddress(root, "usdc", quote);
         vm.serializeUint(root, "baseDecimals", IERC20Metadata(base).decimals());
         vm.serializeUint(root, "quoteDecimals", IERC20Metadata(quote).decimals());
+        // Symbols too, because the frontend labels the pair and the demo deployment is
+        // dWETH/dUSDC — hardcoding "WETH"/"USDC" in the UI would mislabel the very
+        // tokens the deploy created.
+        vm.serializeString(root, "baseSymbol", IERC20Metadata(base).symbol());
+        vm.serializeString(root, "quoteSymbol", IERC20Metadata(quote).symbol());
         string memory out = vm.serializeString(root, "programs", programsJson);
 
         // Configurable so a live deployment does not overwrite the local demo's

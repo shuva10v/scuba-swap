@@ -14,7 +14,7 @@
 
 import { useEffect, useState } from "react";
 import { formatUnits, parseUnits } from "viem";
-import { PAIR, erc20Abi, publicClient, quote } from "../lib/chain";
+import { erc20Abi, publicClient, quote } from "../lib/chain";
 import Diver, { Crab } from "./Diver";
 
 /** How often live quotes refresh. The header states this, so it has to be true. */
@@ -72,11 +72,13 @@ export default function DepthPanel({
   tier,
   setTier,
   onQuotes,
+  side,
+  onFlip,
 }) {
   const [quotes, setQuotes] = useState({});
   const [balance, setBalance] = useState(null);
 
-  const amountIn = safeParse(amount);
+  const amountIn = safeParse(amount, side.sell.decimals);
 
   // The sold-token balance, read from the chain. A DEX form that shows a balance
   // and a MAX button has to mean them: MAX fills in what you can actually spend.
@@ -87,7 +89,7 @@ export default function DepthPanel({
     }
     let live = true;
     publicClient
-      .readContract({ address: PAIR.sell, abi: erc20Abi, functionName: "balanceOf", args: [account] })
+      .readContract({ address: side.sell.address, abi: erc20Abi, functionName: "balanceOf", args: [account] })
       .then((b) => live && setBalance(b))
       .catch(() => live && setBalance(null));
     return () => {
@@ -96,7 +98,7 @@ export default function DepthPanel({
     // `busy` is a dependency so the balance re-reads when a dive finishes — a swap
     // spends the sold token, and a MAX button offering a balance you no longer hold
     // would build a transaction that reverts on transfer.
-  }, [account, busy]);
+  }, [account, busy, side.sell.address]);
 
   // Quotes refresh on a timer as well as on input. The pool moves, so a figure
   // that was true a minute ago is not a live quote — and the header claims 4s.
@@ -160,7 +162,7 @@ export default function DepthPanel({
   // fetched so it can never disagree with the number above it.
   const rate =
     activeOut !== undefined && amountIn
-      ? (Number(formatUnits(activeOut, PAIR.buyDecimals)) / Number(formatUnits(amountIn, PAIR.sellDecimals))).toLocaleString(
+      ? (Number(formatUnits(activeOut, side.buy.decimals)) / Number(formatUnits(amountIn, side.sell.decimals))).toLocaleString(
           undefined,
           { minimumFractionDigits: 2, maximumFractionDigits: 2 },
         )
@@ -175,8 +177,8 @@ export default function DepthPanel({
           ? "same as surface"
           : `${activeOut > surfaceOut ? "+" : "−"}${fmt(
               activeOut > surfaceOut ? activeOut - surfaceOut : surfaceOut - activeOut,
-              PAIR.buyDecimals,
-            )} USDC vs surface`;
+              side.buy.decimals,
+            )} ${side.buy.symbol} vs surface`;
 
   return (
     <section style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
@@ -206,12 +208,12 @@ export default function DepthPanel({
             </label>
             {balance !== null && (
               <div className="mono" style={{ fontSize: 12, color: "#8fa4ac" }}>
-                balance {trim(balance, PAIR.sellDecimals)} WETH
+                balance {trim(balance, side.sell.decimals)} {side.sell.symbol}
               </div>
             )}
             {balance !== null && balance > 0n && (
               <button
-                onClick={() => setAmount(formatUnits(balance, PAIR.sellDecimals))}
+                onClick={() => setAmount(formatUnits(balance, side.sell.decimals))}
                 className="mono"
                 style={{
                   fontSize: 11,
@@ -249,7 +251,7 @@ export default function DepthPanel({
                 fontFamily: "var(--display)",
               }}
             />
-            <TokenPill symbol="WETH" dot="var(--hull)" />
+            <TokenPill symbol={side.sell.symbol} dot={side.sell.dot} />
           </div>
           {amount && !amountIn && (
             <div className="mono" style={{ fontSize: 12, color: "var(--coral)", marginTop: 6 }}>
@@ -258,11 +260,16 @@ export default function DepthPanel({
           )}
         </div>
 
-        {/* Direction badge, centred on the seam between the two cards. Static: this
-            pair is one-way in v1, so it is a diagram rather than a control. */}
-        <div
-          aria-hidden="true"
+        {/* Direction switch, centred on the seam between the two cards. The contract
+            always supported both directions — `isAToB` is one bit of taker traits — so
+            this was a diagram pretending to be a control. Now it is the control. */}
+        <button
+          onClick={onFlip}
+          aria-label={`Swap direction — sell ${side.buy.symbol} instead`}
+          title={`Sell ${side.buy.symbol} instead`}
           style={{
+            cursor: "pointer",
+            padding: 0,
             position: "absolute",
             left: "50%",
             top: "50%",
@@ -281,7 +288,7 @@ export default function DepthPanel({
           }}
         >
           ↓
-        </div>
+        </button>
 
         <div style={{ background: "var(--paper)", borderRadius: 16, padding: "18px 24px 20px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
@@ -311,9 +318,9 @@ export default function DepthPanel({
                   ? "…"
                   : activeQuote.error
                     ? "—"
-                    : fmt(activeQuote.amountOut, PAIR.buyDecimals)}
+                    : fmt(activeQuote.amountOut, side.buy.decimals)}
             </div>
-            <TokenPill symbol="USDC" dot="#2775ca" />
+            <TokenPill symbol={side.buy.symbol} dot={side.buy.dot} />
           </div>
 
           {/* Only facts. The design also showed a slippage figure; this build sends no
@@ -332,7 +339,9 @@ export default function DepthPanel({
               flexWrap: "wrap",
             }}
           >
-            <span>rate 1 WETH = {rate ?? "—"} USDC</span>
+            <span>
+              rate 1 {side.sell.symbol} = {rate ?? "—"} {side.buy.symbol}
+            </span>
             <span>fee {programs[tier].feeLabel}</span>
             {activeQuote?.error ? (
               <span style={{ color: "var(--coral)" }}>{activeQuote.error.message}</span>
@@ -560,10 +569,10 @@ export default function DepthPanel({
                               color: band.key === "surface" ? "var(--abyss)" : "#fff",
                             }}
                           >
-                            {fmt(q.amountOut, PAIR.buyDecimals)}
+                            {fmt(q.amountOut, side.buy.decimals)}
                           </span>
                           <span className="mono" style={{ fontSize: 15, color: band.dim }}>
-                            USDC
+                            {side.buy.symbol}
                           </span>
                           {!isActive && delta !== null && delta !== 0n && (
                             <span
@@ -577,7 +586,7 @@ export default function DepthPanel({
                               }}
                             >
                               {delta > 0n ? "+" : "−"}
-                              {fmt(delta < 0n ? -delta : delta, PAIR.buyDecimals)} vs your tier
+                              {fmt(delta < 0n ? -delta : delta, side.buy.decimals)} vs your tier
                             </span>
                           )}
                         </>
@@ -713,7 +722,8 @@ export default function DepthPanel({
         {surfaceOut !== undefined && humanOut !== undefined && humanOut !== surfaceOut && (
           <div className="mono" style={{ fontSize: 15, color: "var(--midwater)" }}>
             {humanOut > surfaceOut ? "+" : "−"}
-            {fmt(humanOut > surfaceOut ? humanOut - surfaceOut : surfaceOut - humanOut, PAIR.buyDecimals)} USDC
+            {fmt(humanOut > surfaceOut ? humanOut - surfaceOut : surfaceOut - humanOut, side.buy.decimals)}{" "}
+            {side.buy.symbol}
             {tier === "human" ? " vs surface" : " available at −10 m"}
           </div>
         )}
@@ -751,10 +761,10 @@ function trim(v, decimals) {
   return n.toLocaleString(undefined, { maximumFractionDigits: n < 1 ? 6 : 3 });
 }
 
-function safeParse(v) {
+function safeParse(v, sellDecimals) {
   try {
     // The sold side is not always 18dp — read it from the deployment.
-    const n = parseUnits(String(v || "0"), PAIR.sellDecimals);
+    const n = parseUnits(String(v || "0"), sellDecimals);
     return n > 0n ? n : null;
   } catch {
     return null;

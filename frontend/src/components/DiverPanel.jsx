@@ -82,10 +82,8 @@ export default function DiverPanel({ address, proof, onGearUp, gearingUp, error 
               style={{
                 display: "grid",
                 gridTemplateColumns: "auto 1fr auto",
-                gap: 10,
+                gap: 14,
                 alignItems: "center",
-                padding: "10px 12px",
-                borderRadius: 10,
                 // A solid grey fill is the whole disabled affordance — no dashed
                 // border on top of it. Dashes plus grey is two signals for one
                 // state, and it was the dashes that read as broken.
