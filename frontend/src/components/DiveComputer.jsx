@@ -8,11 +8,11 @@
  */
 
 import { useMemo } from "react";
-import { PROGRAMS } from "../lib/chain";
+
 import { decodeProgramFromOrderData } from "../lib/program";
 
-export default function DiveComputer({ programKey, activePc, failedPc, gas }) {
-  const program = PROGRAMS[programKey];
+export default function DiveComputer({ programKey, programs, activePc, failedPc, gas }) {
+  const program = programs[programKey];
   const rows = useMemo(() => decodeProgramFromOrderData(program.data), [program.data]);
 
   return (

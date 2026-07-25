@@ -2,9 +2,9 @@
  * Persists the current proof across reloads.
  *
  * Worth doing because a proof costs a World App round-trip, and — since v4
- * nullifiers are one-time per action — a lost proof cannot simply be re-minted:
- * you need a *new action* to get another one. Dropping it on every hot reload is
- * genuinely expensive.
+ * nullifiers are one-time per action — a lost proof cannot be re-minted for the
+ * same action; you need a fresh one, which means another World App round-trip and
+ * another liveness check. Dropping it on every hot reload is genuinely expensive.
  *
  * A proof is only valid for the exact `(taker, action, chain)` it was issued
  * against, so all three are stored alongside it and a mismatch discards the
@@ -17,9 +17,23 @@
  */
 
 import { keccak256, encodeAbiParameters } from "viem";
-import { DEMO, publicClient, routerAbi } from "./chain";
+import { DEMO, isActionAllowed, publicClient, routerAbi } from "./chain";
 
-const KEY = "scubaswap:proof";
+/**
+ * One slot per environment.
+ *
+ * Scoped rather than global so switching environments does not destroy the proof you
+ * already earned: production and staging each hold their own, and flipping back
+ * restores the wetsuit instead of demanding another World App round-trip. That matters
+ * because a proof is not cheap to replace — a fresh action means a fresh liveness
+ * check — and nothing about switching *invalidates* the proof for the environment it
+ * was minted against.
+ */
+const KEY_PREFIX = "scubaswap:proof";
+const keyFor = (environment) => `${KEY_PREFIX}:${environment}`;
+
+/** Every slot, for the cases where the proofs really are all worthless. */
+const ALL_KEYS = ["production", "staging"].map(keyFor);
 
 /** `keccak256(abi.encode(nullifier, nonce))` — must match `WorldIdGuard.proofId`. */
 export function proofId(nullifier, nonce) {
@@ -28,16 +42,17 @@ export function proofId(nullifier, nonce) {
   );
 }
 
-export function save(proof, { address }) {
+export function save(proof, { address, environment, router }) {
   try {
     localStorage.setItem(
-      KEY,
+      keyFor(environment),
       JSON.stringify({
         ...proof,
         address: address?.toLowerCase(),
-        action: DEMO.worldIdAction,
+        action: proof.action,
         chainId: DEMO.chainId,
-        router: DEMO.router,
+        environment,
+        router,
       }),
     );
   } catch {
@@ -45,9 +60,26 @@ export function save(proof, { address }) {
   }
 }
 
-export function clear() {
+/** Discard the proof for one environment. */
+export function clear(environment) {
   try {
-    localStorage.removeItem(KEY);
+    localStorage.removeItem(keyFor(environment));
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Discard every stored proof.
+ *
+ * For a disconnect or an account change: the signal is derived from the taker
+ * address, so a proof bound to the previous account is unusable in *every*
+ * environment, not just the active one.
+ */
+export function clearAll() {
+  try {
+    // Also sweeps the pre-scoping key, so an upgrade does not leave one behind.
+    for (const k of [...ALL_KEYS, KEY_PREFIX]) localStorage.removeItem(k);
   } catch {
     /* ignore */
   }
@@ -60,7 +92,7 @@ export function clear() {
  * that cannot dive:
  *
  *  - bound to a different taker — the signal would not match
- *  - issued for a different action — the router pins one action hash
+ *  - issued for an action outside the router's prefix
  *  - past the freshness window — the guard enforces it even though the verifier does not
  *  - already spent on-chain — asked of the router directly, because a redeploy
  *    resets the spent set and only the chain knows the truth
@@ -69,21 +101,30 @@ export function clear() {
  * @param {string} opts.address current taker
  * @param {number} opts.windowMs freshness window, mirroring PROOF_FRESHNESS_WINDOW
  */
-export async function load({ address, windowMs }) {
+export async function load({ address, windowMs, environment, router }) {
   let stored;
   try {
-    stored = JSON.parse(localStorage.getItem(KEY) ?? "null");
+    stored = JSON.parse(localStorage.getItem(keyFor(environment)) ?? "null");
   } catch {
     return null;
   }
   if (!stored?.args || !address) return null;
 
-  if (stored.address !== address.toLowerCase()) return discard("bound to a different address");
-  if (stored.action !== DEMO.worldIdAction) return discard(`issued for action "${stored.action}"`);
-  if (stored.chainId !== DEMO.chainId) return discard("issued on a different chain");
+  if (stored.address !== address.toLowerCase()) return discard("bound to a different address", environment);
+  // A prefix check, not equality: every dive mints its own action, so the stored
+  // one will never equal a freshly generated string. What must still hold is that
+  // the router would accept it.
+  if (!isActionAllowed(stored.action)) return discard(`issued for action "${stored.action}"`, environment);
+  if (stored.chainId !== DEMO.chainId) return discard("issued on a different chain", environment);
+  // A staging proof is worthless on the production router and vice versa — separate
+  // identity trees, and the verifier is immutable per router. Checking the router
+  // alone would also catch this, but naming the environment makes the console line
+  // say something a human can act on.
+  if (stored.environment !== environment) return discard(`issued against ${stored.environment}`, environment);
+  if (stored.router?.toLowerCase() !== router?.toLowerCase()) return discard("issued against another router", environment);
 
   if (stored.expiresAtMin * 1000 + windowMs < Date.now()) {
-    return discard("past the freshness window");
+    return discard("past the freshness window", environment);
   }
 
   // The router is the only authority on whether this proof is still usable: a
@@ -91,22 +132,28 @@ export async function load({ address, windowMs }) {
   // both directions.
   try {
     const spent = await publicClient.readContract({
-      address: DEMO.router,
+      address: router,
       abi: routerAbi,
       functionName: "spentProofs",
       args: [proofId(stored.nullifier, stored.nonce)],
     });
-    if (spent) return discard("already spent on this router");
+    if (spent) return discard("already spent on this router", environment);
   } catch {
     // Chain unreachable — restoring optimistically is better than forcing a
     // re-gear, since the dive itself would surface the truth anyway.
   }
 
-  return { args: stored.args, nullifier: stored.nullifier, nonce: stored.nonce, expiresAtMin: stored.expiresAtMin };
+  return {
+    args: stored.args,
+    nullifier: stored.nullifier,
+    nonce: stored.nonce,
+    expiresAtMin: stored.expiresAtMin,
+    action: stored.action,
+  };
 }
 
-function discard(reason) {
-  console.info(`[proof] discarded stored proof — ${reason}`);
-  clear();
+function discard(reason, environment) {
+  console.info(`[proof] discarded stored ${environment} proof — ${reason}`);
+  clear(environment);
   return null;
 }

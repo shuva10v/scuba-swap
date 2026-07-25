@@ -9,7 +9,7 @@
 
 import { useEffect, useState } from "react";
 import { formatUnits, parseUnits } from "viem";
-import { PROGRAMS, quote } from "../lib/chain";
+import { PAIR, quote } from "../lib/chain";
 import Diver, { Crab } from "./Diver";
 
 const BANDS = [
@@ -39,7 +39,7 @@ const BANDS = [
   },
 ];
 
-export default function DepthPanel({ amount, setAmount, takerData, account, verified, onSwap, busy }) {
+export default function DepthPanel({ amount, setAmount, takerData, account, verified, onSwap, busy, programs, router }) {
   const [quotes, setQuotes] = useState({});
   const [botBouncing, setBotBouncing] = useState(false);
 
@@ -53,14 +53,14 @@ export default function DepthPanel({ amount, setAmount, takerData, account, veri
     let live = true;
     (async () => {
       const entries = await Promise.all(
-        BANDS.map(async (b) => [b.key, await quote({ program: PROGRAMS[b.key], amountIn, takerData, account })]),
+        BANDS.map(async (b) => [b.key, await quote({ router, program: programs[b.key], amountIn, takerData, account })]),
       );
       if (live) setQuotes(Object.fromEntries(entries));
     })();
     return () => {
       live = false;
     };
-  }, [amountIn, takerData, account]);
+  }, [amountIn, takerData, account, router, programs]);
 
   // The diver sinks to the deepest band the gear allows. v1 earns −10 m; the
   // reef stays locked, so the diver never reaches it.
@@ -69,6 +69,21 @@ export default function DepthPanel({ amount, setAmount, takerData, account, veri
   const surfaceOut = quotes.surface?.amountOut;
   const humanOut = quotes.human?.amountOut;
   const saved = surfaceOut && humanOut && humanOut > surfaceOut ? humanOut - surfaceOut : null;
+
+  /**
+   * Detect the tiered guard falling through.
+   *
+   * `JumpIfHumanTaker` is built to never revert — a missing, stale, spent or
+   * invalid proof all just mean "pay the open price". Correct for a discount tier,
+   * but it makes a rejected proof indistinguishable from no proof: the band simply
+   * shows the surface number and says nothing.
+   *
+   * Holding a proof and still pricing at the surface is exactly that case. The
+   * reef runs the same check under `OnlyHumanTaker`, which *does* revert, so its
+   * error is the reason the tiered band cannot report for itself.
+   */
+  const fellThrough = verified && surfaceOut !== undefined && humanOut === surfaceOut;
+  const fallThroughReason = quotes.reef?.error;
 
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: 20, minWidth: 0 }}>
@@ -154,10 +169,28 @@ export default function DepthPanel({ amount, setAmount, takerData, account, veri
                   </span>
                   <span style={{ fontFamily: "var(--display)", fontWeight: 700, fontSize: 19 }}>{band.title}</span>
                   <span className="mono" style={{ fontSize: 12, opacity: 0.75 }}>
-                    fee {PROGRAMS[band.key].feeLabel}
+                    fee {programs[band.key].feeLabel}
                   </span>
                 </div>
                 <div style={{ fontSize: 13, opacity: 0.8, marginTop: 4 }}>{band.blurb}</div>
+
+                {/* Name the silent fall-through, using the reef's reason. */}
+                {band.key === "human" && fellThrough && (
+                  <div
+                    className="mono"
+                    style={{
+                      marginTop: 8,
+                      fontSize: 11.5,
+                      background: "rgba(255,122,77,0.22)",
+                      borderRadius: 6,
+                      padding: "6px 8px",
+                      lineHeight: 1.45,
+                    }}
+                  >
+                    ⚠ proof rejected — priced as open
+                    {fallThroughReason && <> · {fallThroughReason.message.toLowerCase()}</>}
+                  </div>
+                )}
 
                 <div className="mono" style={{ marginTop: 10, fontSize: 15 }}>
                   {!amountIn ? (
@@ -171,7 +204,7 @@ export default function DepthPanel({ amount, setAmount, takerData, account, veri
                     </span>
                   ) : (
                     <strong style={{ fontSize: 19, fontWeight: 500 }}>
-                      {fmt(q.amountOut, 6)} <span style={{ opacity: 0.7, fontSize: 14 }}>USDC</span>
+                      {fmt(q.amountOut, PAIR.buyDecimals)} <span style={{ opacity: 0.7, fontSize: 14 }}>USDC</span>
                     </strong>
                   )}
                 </div>
@@ -228,7 +261,7 @@ export default function DepthPanel({ amount, setAmount, takerData, account, veri
 
         {saved && (
           <span className="mono" style={{ fontSize: 13, color: "var(--midwater)" }}>
-            +{fmt(saved, 6)} USDC vs surface
+            +{fmt(saved, PAIR.buyDecimals)} USDC vs surface
           </span>
         )}
       </div>
@@ -238,7 +271,8 @@ export default function DepthPanel({ amount, setAmount, takerData, account, veri
 
 function safeParse(v) {
   try {
-    const n = parseUnits(String(v || "0"), 18);
+    // The sold side is not always 18dp — read it from the deployment.
+    const n = parseUnits(String(v || "0"), PAIR.sellDecimals);
     return n > 0n ? n : null;
   } catch {
     return null;

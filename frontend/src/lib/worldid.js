@@ -2,25 +2,26 @@
  * World ID request wiring.
  */
 
-import { DEMO } from "./chain";
-
-/** The two live v4 verifier proxies on World Chain. */
-const VERIFIERS = {
+/**
+ * Which environment a verifier address belongs to.
+ *
+ * The verifier is the authority, not a separate setting. Staging and production are
+ * separate identity trees: request a production proof and verify it against the
+ * staging proxy (or vice versa) and the call reverts on the Merkle root. Since the
+ * verifier is a router immutable, deriving the environment from it removes any way
+ * for the two to disagree.
+ *
+ * With two routers deployed there are two answers, so this takes the verifier as an
+ * argument rather than being a module constant.
+ */
+const BY_ADDRESS = {
   "0x00000000009e00f9fe82cfeebb4556686da094d7": "production",
   "0x703a6316c975deabf30b637c155edd53e24657db": "staging",
 };
 
-/**
- * Which World ID environment to request proofs from.
- *
- * Derived from the verifier our router was deployed against, never configured
- * separately. Staging and production are **separate identity trees**: request a
- * production proof and verify it against the staging proxy (or vice versa) and
- * the call reverts `InvalidMerkleRoot()`. Since the router's verifier is
- * immutable, it is the authority on which environment is correct, so deriving
- * this removes a way for the two to disagree.
- */
-export const WORLD_ID_ENVIRONMENT = VERIFIERS[DEMO.worldIdVerifier.toLowerCase()] ?? "production";
+export function environmentForVerifier(verifier) {
+  return BY_ADDRESS[(verifier ?? "").toLowerCase()] ?? "production";
+}
 
 /**
  * Fetch an RP signature from our backend.

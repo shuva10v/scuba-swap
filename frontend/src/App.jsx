@@ -7,16 +7,34 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { formatUnits } from "viem";
-import { IDKitRequestWidget, proofOfHuman, setDebug } from "@worldcoin/idkit";
+import { formatUnits, parseUnits } from "viem";
+import { CredentialRequest, IDKitRequestWidget, setDebug } from "@worldcoin/idkit";
 
 import { BubblesMark } from "./components/Diver";
 import DiverPanel from "./components/DiverPanel";
 import DepthPanel from "./components/DepthPanel";
 import DiveComputer from "./components/DiveComputer";
+import EnvInfo from "./components/EnvInfo";
 import WalletMenu, { clearDisconnected, wasDisconnected } from "./components/WalletMenu";
-import { DEMO, PROGRAMS, demoChain, erc20Abi, orderTuple, publicClient, routerAbi, walletClientFrom, decodeRevert } from "./lib/chain";
-import { WORLD_ID_ENVIRONMENT, fetchRpContext } from "./lib/worldid";
+import {
+  AVAILABLE_ENVIRONMENTS,
+  DEFAULT_ENVIRONMENT,
+  DEMO,
+  ENVIRONMENTS,
+  IS_MAINNET,
+  PAIR,
+  demoChain,
+  freshAction,
+  erc20Abi,
+  orderTuple,
+  programsFor,
+  publicClient,
+  routerAbi,
+  routerFor,
+  walletClientFrom,
+  decodeRevert,
+} from "./lib/chain";
+import { environmentForVerifier, fetchRpContext } from "./lib/worldid";
 import * as proofStore from "./lib/proofStore";
 import { buildTakerData, proofFromIdkitResult } from "../../packages/sdk/takerArgs.mjs";
 
@@ -28,14 +46,41 @@ const APP_ID = import.meta.env.VITE_WORLD_APP_ID ?? "";
 // readable report instead; on in dev only.
 if (import.meta.env.DEV) setDebug(true);
 
-// Overridable so a failing request can be bisected without editing code.
-// `environment` normally derives from the router's verifier — override only to
-// test whether a staging/production mismatch is the cause.
+// Which environment the page starts on. The toggle takes over from here; this only
+// picks the initial value, and a stored choice wins over both.
 const ENV_OVERRIDE = import.meta.env.VITE_WORLD_ENV;
+const ENV_STORAGE_KEY = "scubaswap:environment";
+
+function initialEnvironment() {
+  try {
+    const stored = localStorage.getItem(ENV_STORAGE_KEY);
+    if (stored && ENVIRONMENTS[stored]) return stored;
+  } catch {
+    /* storage disabled */
+  }
+  if (ENV_OVERRIDE && ENVIRONMENTS[ENV_OVERRIDE]) return ENV_OVERRIDE;
+  return DEFAULT_ENVIRONMENT;
+}
 
 /** Mirrors WorldIdGuard.PROOF_FRESHNESS_WINDOW (15 minutes). */
 const FRESHNESS_WINDOW_MS = 15 * 60 * 1000;
 const REQUIRE_PRESENCE = import.meta.env.VITE_REQUIRE_PRESENCE !== "false";
+
+/**
+ * Whether to ask World App for a liveness check.
+ *
+ * Requested on production, never on staging: the simulator has no camera and no
+ * person in front of it, so it cannot complete a presence check and asking for one
+ * makes it refuse the whole request. That refusal surfaces as a bare
+ * "Something went wrong" with no reason — the response is encrypted to the app's
+ * key — so it is worth not asking rather than discovering it each time.
+ *
+ * `VITE_REQUIRE_PRESENCE=false` still turns it off for production, which is how a
+ * failing production request gets bisected.
+ */
+function presenceRequiredFor(environment) {
+  return environment !== "staging" && REQUIRE_PRESENCE;
+}
 
 export default function App() {
   const [address, setAddress] = useState(null);
@@ -49,8 +94,21 @@ export default function App() {
   // rp_context is a required widget prop and expires in ~5 min, so it is
   // fetched per gear-up rather than once at load.
   const [rpContext, setRpContext] = useState(null);
+  // The action for the dive currently being geared up. Fresh per attempt, and held
+  // in state because the rp context, the widget and the proof encoder must all
+  // agree on the same string — deriving it three times would produce three
+  // different timestamps.
+  const [diveAction, setDiveAction] = useState(null);
   const [widgetOpen, setWidgetOpen] = useState(false);
   const [gearingUp, setGearingUp] = useState(false);
+
+  // Which World ID environment — and therefore which router — this page is driving.
+  // Must be chosen before gearing up: IDKit takes the environment as a prop and the
+  // QR encodes a bridge URL for it, so this decides which World App can answer, not
+  // just which contract verifies.
+  const [environment, setEnvironment] = useState(initialEnvironment);
+  const router = routerFor(environment);
+  const programs = programsFor(environment);
 
   /**
    * Warn when a proof is past `expiresAtMin` — but never silently discard it.
@@ -144,7 +202,7 @@ export default function App() {
   useEffect(() => {
     if (!address || proof) return;
     let cancelled = false;
-    proofStore.load({ address, windowMs: FRESHNESS_WINDOW_MS }).then((restored) => {
+    proofStore.load({ address, windowMs: FRESHNESS_WINDOW_MS, environment, router }).then((restored) => {
       if (!cancelled && restored) {
         console.info("[proof] restored from storage");
         setProof(restored);
@@ -153,7 +211,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [address, proof]);
+  }, [address, proof, environment, router]);
 
   const connect = useCallback(async () => {
     setError(null);
@@ -177,7 +235,7 @@ export default function App() {
 
   const programKey = proof ? "human" : "surface";
   // Guarded programs need the proof in takerArgs; the surface program ignores it.
-  const takerData = buildTakerData({ isExactIn: true, isAToB: true, instructionsArgs: proof?.args ?? "0x" });
+  const takerData = buildTakerData({ isExactIn: true, isAToB: PAIR.isAToB, instructionsArgs: proof?.args ?? "0x" });
 
   const gearUp = useCallback(async () => {
     setError(null);
@@ -194,7 +252,9 @@ export default function App() {
     }
     setGearingUp(true);
     try {
-      setRpContext(await fetchRpContext(DEMO.worldIdAction));
+      const action = freshAction();
+      setDiveAction(action);
+      setRpContext(await fetchRpContext(action));
       setWidgetOpen(true);
     } catch (e) {
       setGearingUp(false);
@@ -206,7 +266,7 @@ export default function App() {
     (result) => {
     setError(null);
     try {
-      const args = proofFromIdkitResult(result);
+      const args = proofFromIdkitResult(result, diveAction);
       const r = result.responses.find((x) => x.identifier === "proof_of_human");
       const expiresAtMin = Number(r.expires_at_min);
       console.info("[IDKit] parsed →", {
@@ -216,9 +276,9 @@ export default function App() {
         validForSeconds: expiresAtMin - Math.floor(Date.now() / 1000),
         presence: result.user_presence_completed,
       });
-      const minted = { args, nullifier: r.nullifier, nonce: result.nonce, expiresAtMin };
+      const minted = { args, nullifier: r.nullifier, nonce: result.nonce, expiresAtMin, action: diveAction };
       setProof(minted);
-      proofStore.save(minted, { address });
+      proofStore.save(minted, { address, environment, router });
       setGearingUp(false);
       setWidgetOpen(false);
     } catch (e) {
@@ -228,7 +288,10 @@ export default function App() {
       setError(e.message);
       }
     },
-    [address],
+    // diveAction must be a dependency: it changes per gear-up, and a stale closure
+    // would encode the proof against the previous dive's action (or null on the
+    // first attempt), which the guard would reject as not matching the prefix.
+    [address, diveAction, environment, router],
   );
 
   const dive = useCallback(async () => {
@@ -239,17 +302,19 @@ export default function App() {
     setActivePc(0);
     setGas(null);
 
-    const program = PROGRAMS[programKey];
+    const program = programs[programKey];
     try {
       const wallet = walletClientFrom(window.ethereum);
-      const amountIn = BigInt(Math.round(Number(amount) * 1e18));
+      // parseUnits, not float math: `Number(amount) * 1e18` silently loses the low
+      // digits above ~2^53 base units, and the sold side is not always 18dp.
+      const amountIn = parseUnits(String(amount), PAIR.sellDecimals);
 
       // Approve once; the router pulls tokenIn and pushes it into Aqua itself.
       const allowance = await publicClient.readContract({
         address: DEMO.weth,
         abi: erc20Abi,
         functionName: "allowance",
-        args: [address, DEMO.router],
+        args: [address, router],
       });
       if (allowance < amountIn) {
         const hash = await wallet.writeContract({
@@ -257,14 +322,14 @@ export default function App() {
           address: DEMO.weth,
           abi: erc20Abi,
           functionName: "approve",
-          args: [DEMO.router, 2n ** 256n - 1n],
+          args: [router, 2n ** 256n - 1n],
         });
         await publicClient.waitForTransactionReceipt({ hash });
       }
 
       const hash = await wallet.writeContract({
         account: address,
-        address: DEMO.router,
+        address: router,
         abi: routerAbi,
         functionName: "swap",
         args: [orderTuple(program), amountIn, takerData],
@@ -277,7 +342,7 @@ export default function App() {
       // that immediately is more honest than leaving it on until it expires.
       if (proof) {
         setProof(null);
-        proofStore.clear();
+        proofStore.clear(environment);
       }
     } catch (e) {
       const d = decodeRevert(e);
@@ -303,23 +368,78 @@ export default function App() {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          {/* Environment switch. Only rendered when the deployment actually has
+              more than one router — a single-router config gets no dead control.
+
+              Switching drops the current proof: it was minted against one identity
+              tree and the other router's verifier will not accept it. Discarding it
+              is the honest move, because the alternative is showing a wetsuit that
+              silently prices at the open tier. */}
+          {AVAILABLE_ENVIRONMENTS.length > 1 && (
+            <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+            <div style={{ display: "flex", borderRadius: 8, overflow: "hidden", border: "1px solid var(--locked)" }}>
+              {AVAILABLE_ENVIRONMENTS.map((name) => (
+                <button
+                  key={name}
+                  onClick={() => {
+                    if (name === environment) return;
+                    setEnvironment(name);
+                    try {
+                      localStorage.setItem(ENV_STORAGE_KEY, name);
+                    } catch {
+                      /* storage disabled; the choice just will not persist */
+                    }
+                    // Drop it from *state* only. The stored proof for the env we are
+                    // leaving stays on disk, so switching back restores the wetsuit
+                    // rather than demanding another liveness check — nothing about
+                    // switching invalidates a proof for the tree it was minted in.
+                    // The restore effect then loads whatever the new env has, if any.
+                    setProof(null);
+                    setError(null);
+                    setGas(null);
+                    setActivePc(null);
+                    setFailedPc(null);
+                  }}
+                  className="mono"
+                  style={{
+                    border: "none",
+                    padding: "7px 11px",
+                    fontSize: 11,
+                    cursor: name === environment ? "default" : "pointer",
+                    background: name === environment ? "var(--abyss)" : "transparent",
+                    color: name === environment ? "#fff" : "var(--locked)",
+                  }}
+                  title={
+                    name === environment
+                      ? `router ${routerFor(name)}`
+                      : `switch to the ${name} router (${routerFor(name).slice(0, 8)}…) — discards the current proof`
+                  }
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
+            <EnvInfo environment={environment} />
+            </div>
+          )}
+
           {/* Explicitly labelled: an unlabelled truncated address sitting next
               to a Connect button reads as a connected account, which this is
               not — it is the contract the UI is pointed at. */}
           <span className="mono" style={{ fontSize: 11, color: "var(--locked)", textAlign: "right", lineHeight: 1.5 }}>
-            <span style={{ opacity: 0.7 }}>router</span> {DEMO.router.slice(0, 6)}…{DEMO.router.slice(-4)}
+            <span style={{ opacity: 0.7 }}>router</span> {router.slice(0, 6)}…{router.slice(-4)}
             <br />
-            <span style={{ opacity: 0.7 }}>World Chain fork · chain {DEMO.chainId}</span>
+            <span style={{ opacity: 0.7 }}>{IS_MAINNET ? "World Chain" : "World Chain fork"} · chain {DEMO.chainId}</span>
           </span>
           <WalletMenu
             address={address}
             onConnect={connect}
             onDisconnect={() => {
               setAddress(null);
-              // A proof is bound to the address that swaps, so it cannot survive
-              // a disconnect.
+              // A proof is bound to the address that swaps, so it cannot survive a
+              // disconnect — in any environment, not just the active one.
               setProof(null);
-              proofStore.clear();
+              proofStore.clearAll();
               setError(null);
             }}
           />
@@ -341,22 +461,39 @@ export default function App() {
                session, which would silently poll for a proof nobody is sending. */
             key={rpContext.nonce}
             app_id={APP_ID}
-            action={DEMO.worldIdAction}
+            action={diveAction}
             rp_context={rpContext}
             /* v4 only. `true` would let World App fall back to a 3.0 payload,
                which our guard structurally cannot verify — different proof
                system, different contract. */
             allow_legacy_proofs={false}
-            /* Ask World App to check a live human is present. Note the result
-               (`user_presence_completed`) is off-chain JSON only: v4's on-chain
-               verify() has no presence parameter, so the contract cannot check
-               it. Requested because it is the right signal to ask for, not
-               because it is enforceable on-chain. */
-            require_user_presence={REQUIRE_PRESENCE}
+            /* Ask World App to check a live human is present — production only; the
+               simulator cannot do it. Note the result (`user_presence_completed`) is
+               off-chain JSON only: v4's on-chain verify() has no presence parameter,
+               so the contract cannot check it. Requested because it is the right
+               signal to ask for, not because it is enforceable on-chain. */
+            require_user_presence={presenceRequiredFor(environment)}
             /* Must match the verifier the router was deployed against — staging
                and production are separate identity trees. Derived, not configured. */
-            environment={ENV_OVERRIDE ?? WORLD_ID_ENVIRONMENT}
-            preset={proofOfHuman({ signal: address ?? undefined })}
+            environment={environment}
+            /* `constraints` rather than `preset`: same request — one proof_of_human
+               credential bound to the taker address — but the explicit form, and the
+               only one that can express the other two constraints if we ever need them.
+
+               Both are deliberately left unset, and neither is a free choice:
+
+               `genesis_issued_at_min` is a public input to verify(), taken from the
+               *program's* maker policy on chain. Our programs ship 0, so requesting a
+               non-zero constraint here would make every proof fail verification until
+               the shipped policy matched it.
+
+               `expires_at_min` would be actively harmful. The guard's freshness check
+               is `expiresAtMin + 15min >= block.timestamp`, so asking World App for a
+               credential valid far into the future would push `expiresAtMin` forward
+               and make that check pass for as long as the request asked — turning the
+               anti-bot window off from the client side. Leaving it unset yields the
+               issuance-time value the window is designed around. */
+            constraints={CredentialRequest("proof_of_human", { signal: address ?? undefined })}
             open={widgetOpen}
             onOpenChange={(o) => {
               setWidgetOpen(o);
@@ -383,7 +520,7 @@ export default function App() {
               // wrong when this happens, so say so rather than implying a fault.
               if (code === "nullifier_replayed" || code === "max_verifications_reached") {
                 setError(
-                  `World ID has already issued this identity a proof for "${DEMO.worldIdAction}", and it ` +
+                  `World ID has already issued this identity a proof for "${diveAction}", and it ` +
                     "caps that at one per action — so it will not issue another. Not a ScubaSwap error: " +
                     "the on-chain guard would happily accept a second proof. Register a new action and " +
                     "redeploy with WORLD_ID_ACTION set to it, or use a different World ID.",
@@ -393,8 +530,8 @@ export default function App() {
 
               setError(
                 `World ID error: ${code}. Full debug report logged to the console. ` +
-                  `Requested env=${ENV_OVERRIDE ?? WORLD_ID_ENVIRONMENT}, ` +
-                  `app_id=${APP_ID.slice(0, 12)}…, action=${DEMO.worldIdAction}, ` +
+                  `Requested env=${environment}, ` +
+                  `app_id=${APP_ID.slice(0, 12)}…, action=${diveAction}, ` +
                   `rp_id=${DEMO.worldIdRpId ?? "?"}`,
               );
             }}
@@ -409,9 +546,11 @@ export default function App() {
           verified={Boolean(proof)}
           onSwap={dive}
           busy={busy}
+          programs={programs}
+          router={router}
         />
 
-        <DiveComputer programKey={programKey} activePc={activePc} failedPc={failedPc} gas={gas} />
+        <DiveComputer programKey={programKey} programs={programs} activePc={activePc} failedPc={failedPc} gas={gas} />
       </div>
 
       <footer className="mono" style={{ marginTop: 40, fontSize: 11.5, color: "var(--locked)", lineHeight: 1.7 }}>
