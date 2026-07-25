@@ -14,7 +14,7 @@
 
 import { useEffect, useState } from "react";
 import { formatUnits, parseUnits } from "viem";
-import { erc20Abi, publicClient, quote } from "../lib/chain";
+import { TOKENS, erc20Abi, publicClient, quote } from "../lib/chain";
 import Diver, { Crab } from "./Diver";
 
 /** How often live quotes refresh. The header states this, so it has to be true. */
@@ -76,29 +76,60 @@ export default function DepthPanel({
   onFlip,
 }) {
   const [quotes, setQuotes] = useState({});
-  const [balance, setBalance] = useState(null);
+  const [balances, setBalances] = useState({});
 
   const amountIn = safeParse(amount, side.sell.decimals);
 
-  // The sold-token balance, read from the chain. A DEX form that shows a balance
-  // and a MAX button has to mean them: MAX fills in what you can actually spend.
+  // Both token balances, polled on the same cadence as the quotes.
+  //
+  // Polled rather than read once, which is the fix for balances that looked like
+  // constants: a one-shot read never noticed a mint, an incoming transfer, or a swap
+  // made in another tab. `busy` stays a dependency so a dive refreshes immediately
+  // instead of waiting out the interval.
+  //
+  // Keyed on TOKENS rather than on the current direction, so flipping does not restart
+  // the poll — the pair is the same two tokens either way.
   useEffect(() => {
     if (!account) {
-      setBalance(null);
+      setBalances({});
       return;
     }
     let live = true;
-    publicClient
-      .readContract({ address: side.sell.address, abi: erc20Abi, functionName: "balanceOf", args: [account] })
-      .then((b) => live && setBalance(b))
-      .catch(() => live && setBalance(null));
+    const read = (t) =>
+      publicClient.readContract({ address: t.address, abi: erc20Abi, functionName: "balanceOf", args: [account] });
+    const run = async () => {
+      try {
+        const [base, quoteBal] = await Promise.all([read(TOKENS.base), read(TOKENS.quote)]);
+        if (live) {
+          setBalances({
+            [TOKENS.base.address.toLowerCase()]: base,
+            [TOKENS.quote.address.toLowerCase()]: quoteBal,
+          });
+        }
+      } catch {
+        if (live) setBalances({});
+      }
+    };
+    run();
+    const id = setInterval(run, QUOTE_REFRESH_MS);
     return () => {
       live = false;
+      clearInterval(id);
     };
-    // `busy` is a dependency so the balance re-reads when a dive finishes — a swap
-    // spends the sold token, and a MAX button offering a balance you no longer hold
-    // would build a transaction that reverts on transfer.
-  }, [account, busy, side.sell.address]);
+  }, [account, busy]);
+
+  const balanceOf = (t) => balances[t.address.toLowerCase()];
+  const sellBalance = balanceOf(side.sell);
+  const buyBalance = balanceOf(side.buy);
+
+  /**
+   * Does the amount exceed what you hold?
+   *
+   * Worth catching in the form. The swap would revert on transfer after the wallet
+   * prompt and the gas estimate, which reads as a broken app rather than as an amount
+   * you cannot afford.
+   */
+  const insufficient = amountIn !== null && sellBalance !== undefined && amountIn > sellBalance;
 
   // Quotes refresh on a timer as well as on input. The pool moves, so a figure
   // that was true a minute ago is not a live quote — and the header claims 4s.
@@ -206,14 +237,14 @@ export default function DepthPanel({
             <label className="eyebrow" style={{ color: "var(--locked)", flex: 1 }} htmlFor="amt">
               You pay
             </label>
-            {balance !== null && (
+            {sellBalance !== undefined && (
               <div className="mono" style={{ fontSize: 12, color: "#8fa4ac" }}>
-                balance {trim(balance, side.sell.decimals)} {side.sell.symbol}
+                balance {trim(sellBalance, side.sell.decimals)} {side.sell.symbol}
               </div>
             )}
-            {balance !== null && balance > 0n && (
+            {sellBalance !== undefined && sellBalance > 0n && (
               <button
-                onClick={() => setAmount(formatUnits(balance, side.sell.decimals))}
+                onClick={() => setAmount(formatUnits(sellBalance, side.sell.decimals))}
                 className="mono"
                 style={{
                   fontSize: 11,
@@ -258,6 +289,11 @@ export default function DepthPanel({
               not a number
             </div>
           )}
+          {insufficient && (
+            <div className="mono" style={{ fontSize: 12, color: "var(--coral)", marginTop: 6 }}>
+              more than your {side.sell.symbol} balance
+            </div>
+          )}
         </div>
 
         {/* Direction switch, centred on the seam between the two cards. The contract
@@ -295,6 +331,11 @@ export default function DepthPanel({
             <div className="eyebrow" style={{ color: "var(--locked)", flex: 1 }}>
               You receive (est.)
             </div>
+            {buyBalance !== undefined && (
+              <div className="mono" style={{ fontSize: 12, color: "#8fa4ac" }}>
+                balance {trim(buyBalance, side.buy.decimals)} {side.buy.symbol}
+              </div>
+            )}
             <div className="mono" style={{ fontSize: 12, color: "var(--midwater)" }}>
               via {activeBand?.title} · {activeBand?.depth}
             </div>
@@ -674,7 +715,7 @@ export default function DepthPanel({
       <div style={{ display: "flex", alignItems: "center", gap: 18, marginTop: 26, flexWrap: "wrap" }}>
         <button
           onClick={onSwap}
-          disabled={!amountIn || busy || !account}
+          disabled={!amountIn || busy || !account || insufficient}
           style={{
             background: "var(--verified)",
             border: 0,
@@ -684,8 +725,8 @@ export default function DepthPanel({
             fontSize: 19,
             fontWeight: 700,
             color: "var(--verified-ink)",
-            cursor: !amountIn || busy || !account ? "not-allowed" : "pointer",
-            opacity: !amountIn || busy || !account ? 0.45 : 1,
+            cursor: !amountIn || busy || !account || insufficient ? "not-allowed" : "pointer",
+            opacity: !amountIn || busy || !account || insufficient ? 0.45 : 1,
           }}
         >
           {busy

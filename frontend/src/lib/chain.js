@@ -95,11 +95,18 @@ export const demoChain = defineChain({
   name: IS_MAINNET ? "World Chain" : "ScubaSwap demo (World Chain fork)",
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
   rpcUrls: { default: { http: [RPC_URL] } },
+  // Canonical Multicall3, verified deployed on World Chain. Declared because we define
+  // this chain by hand rather than importing viem's, and without it viem cannot batch.
+  contracts: { multicall3: { address: "0xcA11bde05977b3631167028862bE2a173976CA11" } },
 });
 
 export const publicClient = createPublicClient({
   chain: demoChain,
   transport: http(),
+  // Coalesce concurrent reads into one multicall. The page polls quotes and balances
+  // every few seconds, and a public RPC is the most likely thing to rate-limit at the
+  // worst moment — batching keeps that to one request per tick instead of five.
+  batch: { multicall: true },
 });
 
 export function walletClientFrom(provider) {
