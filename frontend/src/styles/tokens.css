@@ -99,24 +99,6 @@ h2 {
   }
 }
 
-/* The crab approaches, hits the boundary rule, and is knocked back. Single
-   translateX per the doc — deliberately not a physics simulation. */
-@keyframes crab-bounce {
-  0%,
-  100% {
-    transform: translateX(0);
-  }
-  45% {
-    transform: translateX(84px);
-  }
-  55% {
-    transform: translateX(84px);
-  }
-  80% {
-    transform: translateX(-14px);
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

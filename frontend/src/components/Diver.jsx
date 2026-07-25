@@ -139,18 +139,19 @@ export function BubblesMark({ size = 32 }) {
 /**
  * The bot crab. Grey shell, coral claws, no wetsuit — ever.
  *
- * `bouncing` drives a single translateX keyframe against the boundary rule,
- * matching the doc's note that this is deliberately not a physics simulation.
+ * Static. It used to animate against the boundary rule when a "release a bot"
+ * button was pressed; with that button gone nothing could trigger it, so the prop,
+ * the keyframes and the alternate label went too rather than sitting unreachable.
+ * The crab still says what it needs to: this is who trades at the surface.
  */
-export function Crab({ bouncing = false, size = 86 }) {
+export function Crab({ size = 86 }) {
   return (
     <svg
       width={size}
       height={size * 0.7}
       viewBox="0 0 120 84"
       role="img"
-      aria-label={bouncing ? "Bot turned away at the boundary" : "Bot approaching"}
-      style={bouncing ? { animation: "crab-bounce 1.4s ease-in-out" } : undefined}
+      aria-label="Bot at the surface"
     >
       <rect x="26" y="24" width="68" height="38" rx="8" fill="var(--locked)" />
       <rect x="38" y="34" width="16" height="10" fill="var(--abyss)" />

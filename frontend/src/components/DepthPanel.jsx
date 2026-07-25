@@ -41,7 +41,6 @@ const BANDS = [
 
 export default function DepthPanel({ amount, setAmount, takerData, account, verified, onSwap, busy, programs, router }) {
   const [quotes, setQuotes] = useState({});
-  const [botBouncing, setBotBouncing] = useState(false);
 
   const amountIn = safeParse(amount);
 
@@ -211,8 +210,9 @@ export default function DepthPanel({ amount, setAmount, takerData, account, veri
               </div>
 
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-                {/* The bot lives at the surface and gets turned away at the rule. */}
-                {i === 0 && <Crab bouncing={botBouncing} size={70} />}
+                          {/* The bot lives at the surface. Static: it is a statement about who
+                    trades here, not an animation to trigger. */}
+                {i === 0 && <Crab size={70} />}
                 {i === diverBand && <Diver wetsuit={verified ? "on" : "off"} width={92} />}
               </div>
             </div>
@@ -239,24 +239,6 @@ export default function DepthPanel({ amount, setAmount, takerData, account, veri
           }}
         >
           {busy ? "Diving…" : verified ? "Dive to −10 m" : "Swim at surface"}
-        </button>
-
-        <button
-          onClick={() => {
-            setBotBouncing(true);
-            setTimeout(() => setBotBouncing(false), 1500);
-          }}
-          style={{
-            background: "transparent",
-            border: "1px solid var(--locked)",
-            color: "var(--abyss)",
-            borderRadius: 10,
-            padding: "13px 18px",
-            fontSize: 14,
-            cursor: "pointer",
-          }}
-        >
-          Release a bot
         </button>
 
         {saved && (
