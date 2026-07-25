@@ -19,7 +19,7 @@ const PATH = "/api/rp-signature";
 
 if (!process.env.RP_SIGNING_KEY) {
   console.error("RP_SIGNING_KEY is not set — start with:");
-  console.error("  RP_SIGNING_KEY=0x<64 hex> ALLOWED_ACTIONS=world-demo-v2 npm run dev\n");
+  console.error("  RP_SIGNING_KEY=0x<64 hex> ALLOWED_ACTIONS=scubaswap-connect npm run dev\n");
   process.exit(1);
 }
 if (!process.env.ALLOWED_ACTIONS) {

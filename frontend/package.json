@@ -1,0 +1,22 @@
+{
+  "name": "scubaswap-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "5.101.4",
+    "@worldcoin/idkit": "4.2.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "viem": "2.55.8",
+    "wagmi": "3.7.4"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "5.1.2",
+    "vite": "7.3.2"
+  }
+}

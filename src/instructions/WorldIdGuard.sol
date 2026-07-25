@@ -144,6 +144,21 @@ abstract contract WorldIdGuard {
     /// @notice uint64 of the hex tail of the Developer Portal `rp_...` id.
     uint64 public immutable WORLD_ID_RP_ID;
 
+    /// @notice How long after `expiresAtMin` a proof is still accepted.
+    ///
+    /// @dev Not zero, and that is a correction rather than a loosening.
+    /// `expires_at_min` reads as "the credential expires no earlier than T", and
+    /// World App sets T to roughly the moment of issuance — so a bare
+    /// `T >= block.timestamp` is false within a second or two of minting and no
+    /// real taker could ever satisfy it.
+    ///
+    /// 15 minutes keeps the property that matters: an on-chain freshness bound
+    /// the verifier itself does not provide. The verifier's own limit is the
+    /// Merkle-root history window, measured at roughly an hour, so this is still
+    /// four times tighter than doing nothing — while being long enough to sign a
+    /// transaction in.
+    uint64 public constant PROOF_FRESHNESS_WINDOW = 15 minutes;
+
     /// @notice Proofs already consumed, keyed by (nullifier, nonce).
     mapping(bytes32 proofId => bool spent) public spentProofs;
 
@@ -212,7 +227,7 @@ abstract contract WorldIdGuard {
 
         (uint256 nullifier, uint256 nonce, uint64 expiresAtMin, uint256[5] memory proof) = raw.parseProof();
 
-        if (expiresAtMin < block.timestamp) return; // stale: open tier
+        if (!_isFresh(expiresAtMin)) return; // stale: open tier
         bytes32 id = proofId(nullifier, nonce);
         if (spentProofs[id]) return; // already used: open tier
 
@@ -247,10 +262,19 @@ abstract contract WorldIdGuard {
         return abi.encodePacked(taker).hashToField();
     }
 
-    /// @dev The check the verifier does not do. Without it a proof is valid
-    /// forever and the entire anti-bot property evaporates. FRICTION W-06.
+    /// @dev The check the verifier does not do. Without it a proof is bounded only
+    /// by the root-history window (~1 hour), and the anti-bot property is
+    /// whatever World ID happens to allow. FRICTION W-06.
+    ///
+    /// Widened to `uint256` before adding: `expiresAtMin` is a taker-supplied
+    /// `uint64`, so `expiresAtMin + WINDOW` could otherwise wrap and turn an
+    /// ancient proof into a fresh one.
+    function _isFresh(uint64 expiresAtMin) internal view returns (bool) {
+        return uint256(expiresAtMin) + uint256(PROOF_FRESHNESS_WINDOW) >= block.timestamp;
+    }
+
     function _requireFresh(uint64 expiresAtMin) internal view {
-        require(expiresAtMin >= block.timestamp, WorldIdProofExpired(expiresAtMin, block.timestamp));
+        require(_isFresh(expiresAtMin), WorldIdProofExpired(expiresAtMin, block.timestamp));
     }
 
     /// @dev Consume the fixed-size proof payload, failing loudly if short.

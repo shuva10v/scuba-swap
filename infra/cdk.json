@@ -1,7 +1,7 @@
 {
   "app": "node bin/infra.mjs",
   "context": {
-    "allowedActions": "world-demo-v2",
-    "rpId": "rp_2c23993348beb0ce"
+    "allowedActions": "scubaswap-connect,scubaswap-connect-2,scubaswap-connect-3,scubaswap-connect-4,scubaswap-connect-5,scubaswap-connect-6,scubaswap-connect-7,scubaswap-connect-8,scubaswap-connect-9,scubaswap-connect-10",
+    "rpId": "rp_d8319d06a1241d73"
   }
 }

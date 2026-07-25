@@ -38,7 +38,7 @@ export class ScubaSwapStack extends Stack {
     // itself. Otherwise pass a pre-existing us-east-1 certificate ARN.
     const hostedZoneName = this.node.tryGetContext("hostedZoneName") || undefined;
     const certificateArn = this.node.tryGetContext("certificateArn") || undefined;
-    const allowedActions = this.node.tryGetContext("allowedActions") || "world-demo-v2";
+    const allowedActions = this.node.tryGetContext("allowedActions") || "scubaswap-connect";
     const rpId = this.node.tryGetContext("rpId") || "";
 
     // ---------------------------------------------------------------- secret

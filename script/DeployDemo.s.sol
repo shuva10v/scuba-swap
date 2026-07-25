@@ -4,6 +4,9 @@ pragma solidity 0.8.30;
 import { Script } from "forge-std/Script.sol";
 import { console } from "forge-std/console.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import { Strings } from "@openzeppelin/contracts/utils/Strings.sol";
+
+import { ByteHasher } from "../src/helpers/ByteHasher.sol";
 
 import { Aqua } from "@1inch/aqua/src/Aqua.sol";
 import { ISwapVM } from "@1inch/swap-vm/src/interfaces/ISwapVM.sol";
@@ -19,17 +22,22 @@ import { SCUBA_OP_ONLY_HUMAN_TAKER, SCUBA_OP_JUMP_IF_HUMAN } from "../src/opcode
 /// @notice Stands up the full ScubaSwap demo on a World Chain fork and writes
 /// `deployments/demo.json` for the frontend to consume.
 ///
-/// @dev Deploys Aqua because World Chain has none — see FRICTION W-07. Points
-/// the router at the **staging** World ID verifier by default: staging proofs
-/// come from the simulator, so the demo can be driven without an Orb. Override
-/// with `WORLD_ID_VERIFIER=0x0000...94d7` for production.
+/// @dev Aqua and the router are deployed **before** this script runs, with
+/// `forge create`, and passed in via `AQUA_ADDRESS` / `ROUTER_ADDRESS`.
+///
+/// That split is not stylistic. `forge script` cannot broadcast the router's
+/// CREATE: it fails to locate the constructor arguments inside `via_ir` init code
+/// and aborts with `type check failed for "offset (usize)"` — *after* the script
+/// body has already written demo.json, so the config names an address that was
+/// never deployed. `via_ir` is not optional either (SwapVM hits "stack too deep"
+/// without it), so the CREATEs move out and this script only broadcasts CALLs,
+/// which decode fine.
 ///
 /// Expects the broadcaster to already hold WETH and USDC — `script/demo-up.sh`
-/// arranges that against anvil. Run:
-///
-///     forge script script/DeployDemo.s.sol --rpc-url http://localhost:8545 \
-///       --broadcast --unlocked --sender <maker>
+/// arranges all of it.
 contract DeployDemo is Script {
+    using ByteHasher for bytes;
+
     address internal constant WETH = 0x4200000000000000000000000000000000000006;
     address internal constant USDC = 0x79A02482A880bCE3F13e09Da970dC34db4CD24d1;
     address internal constant WORLD_ID_V4_STAGING = 0x703a6316c975DEabF30b637c155edD53e24657DB;
@@ -48,17 +56,23 @@ contract DeployDemo is Script {
     function run() external {
         address maker = msg.sender;
         IWorldIDVerifier verifier = IWorldIDVerifier(vm.envOr("WORLD_ID_VERIFIER", WORLD_ID_V4_STAGING));
-        string memory action = vm.envOr("WORLD_ID_ACTION", string("world-demo-v2"));
-        uint64 rpId = uint64(vm.envOr("WORLD_ID_RP_ID", uint256(3_180_554_207_396_540_622)));
+        string memory action = vm.envOr("WORLD_ID_ACTION", string("scubaswap-connect"));
+        uint64 rpId = uint64(vm.envOr("WORLD_ID_RP_ID", uint256(15578405237850119539)));
 
         require(IERC20(WETH).balanceOf(maker) >= SHIP_WETH, "maker has no WETH - run script/demo-up.sh first");
         require(IERC20(USDC).balanceOf(maker) >= SHIP_USDC, "maker has no USDC - run script/demo-up.sh first");
 
-        vm.startBroadcast();
+        Aqua aqua = Aqua(vm.envAddress("AQUA_ADDRESS"));
+        ScubaSwapVMRouter router = ScubaSwapVMRouter(payable(vm.envAddress("ROUTER_ADDRESS")));
 
-        Aqua aqua = new Aqua();
-        ScubaSwapVMRouter router =
-            new ScubaSwapVMRouter(address(aqua), WETH, maker, "ScubaSwapVM", "1", verifier, action, rpId);
+        // Fail loudly rather than shipping against an address with no code, which
+        // would surface much later as an unexplained revert in the frontend.
+        require(address(aqua).code.length > 0, "AQUA_ADDRESS has no code");
+        require(address(router).code.length > 0, "ROUTER_ADDRESS has no code");
+        require(router.WORLD_ID_ACTION() == bytes(action).hashToField(), "router action != WORLD_ID_ACTION");
+        require(router.WORLD_ID_RP_ID() == rpId, "router rpId != WORLD_ID_RP_ID");
+
+        vm.startBroadcast();
 
         IERC20(WETH).approve(address(aqua), type(uint256).max);
         IERC20(USDC).approve(address(aqua), type(uint256).max);
@@ -186,7 +200,11 @@ contract DeployDemo is Script {
         vm.serializeAddress(root, "router", router);
         vm.serializeAddress(root, "worldIdVerifier", verifier);
         vm.serializeString(root, "worldIdAction", action);
-        vm.serializeUint(root, "worldIdRpId", rpId);
+        // Serialised as a string, not a number: a uint64 rp_id exceeds
+        // JavaScript's MAX_SAFE_INTEGER, and JSON.parse would round it. It is
+        // displayed and compared in the frontend, so a silently wrong value is
+        // worse than an inconvenient type.
+        vm.serializeString(root, "worldIdRpId", Strings.toString(uint256(rpId)));
         vm.serializeAddress(root, "maker", maker);
         vm.serializeAddress(root, "weth", WETH);
         vm.serializeAddress(root, "usdc", USDC);

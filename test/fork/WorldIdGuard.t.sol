@@ -113,26 +113,69 @@ contract WorldIdGuardTest is WorldChainForkBase {
         router.swap(order, 10_000e6, _takerData(bot, true, false, stolen));
     }
 
-    /// @notice An expired proof is rejected by US, since the verifier won't.
-    /// @dev The whole anti-bot property rests on this one check. The mock, like
-    /// the real verifier, happily accepts a stale proof — so if the guard's
-    /// `_requireFresh` were removed, this test would fail and nothing else would.
+    /// @notice A proof past `expiresAtMin` but inside the window is ACCEPTED.
+    /// @dev The case that was broken. `expires_at_min` lands at roughly the moment
+    /// of issuance, so a bare `expiresAtMin >= block.timestamp` is false within
+    /// seconds of minting and no real taker could satisfy it — the UI showed a
+    /// wetsuit and every dive would have reverted. The window is what makes the
+    /// check enforceable rather than merely strict.
+    function test_humanOnly_proofJustPastExpiryIsStillAccepted() public {
+        ISwapVM.Order memory order = _createOrder(_humanOnlyProgram(50));
+        _shipDefault(SwapVM(payable(address(router))), order);
+        _fundTaker(address(router), human, USDC, 10_000e6);
+
+        uint64 expiry = uint64(block.timestamp);
+        bytes memory proof = _validProofFor(human, 50, expiry);
+
+        // Well past expiresAtMin, comfortably inside PROOF_FRESHNESS_WINDOW.
+        vm.warp(uint256(expiry) + 5 minutes);
+
+        vm.prank(human);
+        (, uint256 out,) = router.swap(order, 10_000e6, _takerData(human, true, false, proof));
+        assertGt(out, 0, "a proof minted five minutes ago must still be usable");
+    }
+
+    /// @notice Beyond the window, the guard rejects it — the verifier would not.
+    /// @dev The mock, like the real verifier, accepts a stale proof happily. If
+    /// `_requireFresh` were deleted, this test would fail and nothing else would.
     /// FRICTION W-06.
-    function test_humanOnly_expiredProofIsRejected() public {
+    function test_humanOnly_proofBeyondFreshnessWindowIsRejected() public {
         ISwapVM.Order memory order = _createOrder(_humanOnlyProgram(5));
         _shipDefault(SwapVM(payable(address(router))), order);
         _fundTaker(address(router), human, USDC, 10_000e6);
 
-        uint64 expiry = uint64(block.timestamp + 300);
+        uint64 expiry = uint64(block.timestamp);
         bytes memory proof = _validProofFor(human, 5, expiry);
 
-        vm.warp(expiry + 1);
+        vm.warp(uint256(expiry) + router.PROOF_FRESHNESS_WINDOW() + 1);
 
         vm.prank(human);
         vm.expectRevert(
             abi.encodeWithSelector(WorldIdGuard.WorldIdProofExpired.selector, expiry, block.timestamp)
         );
         router.swap(order, 10_000e6, _takerData(human, true, false, proof));
+    }
+
+    /// @notice The tiered guard uses the SAME window, not its own copy of the rule.
+    /// @dev Both guards previously inlined the comparison; a stale proof must fall
+    /// through to the open tier on 0x33 at exactly the point 0x27 starts reverting.
+    function test_tiered_staleProofFallsThroughAtTheSameBoundary() public {
+        ISwapVM.Order memory order = _createOrder(_tieredProgram(51));
+        _shipDefault(SwapVM(payable(address(router))), order);
+
+        uint64 expiry = uint64(block.timestamp);
+        bytes memory proof = _validProofFor(human, 51, expiry);
+        ISwapVM view_ = router.asView();
+
+        vm.warp(uint256(expiry) + router.PROOF_FRESHNESS_WINDOW() - 1);
+        vm.prank(human);
+        (, uint256 fresh,) = view_.quote(order, 1e18, _takerData(human, true, true, proof));
+
+        vm.warp(uint256(expiry) + router.PROOF_FRESHNESS_WINDOW() + 1);
+        vm.prank(human);
+        (, uint256 stale,) = view_.quote(order, 1e18, _takerData(human, true, true, proof));
+
+        assertGt(fresh, stale, "inside the window should price better than outside it");
     }
 
     /// @notice One proof buys exactly one swap.

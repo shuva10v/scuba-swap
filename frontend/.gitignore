@@ -1,0 +1,5 @@
+node_modules/
+dist/
+# Not secret (VITE_ vars are public by construction) but machine-specific.
+.env.local
+.env.*.local

@@ -402,3 +402,47 @@ failure shape, because it looks green when written and broken when reviewed.
 inside the fixture's root window. Worth knowing before generating a fixture for
 a demo: it is not a build artefact you capture once, it is closer to a
 screenshot with a timestamp.
+
+### W-10 — v4 nullifiers are one-time per action, and the escape hatch is undocumented
+World ID 4.0 makes a uniqueness nullifier single-use by protocol:
+
+> "In 4.0, nullifiers are one-time-use, and `session_id` is the stable link across
+> requests."
+
+A second `proofOfHuman` request for the same `(identity, rp, action)` is refused at
+the **issuance** layer with `nullifier_replayed` — before any contract is involved.
+So a repeatable on-chain action cannot be built on one fixed action string, however
+carefully the contract handles nullifiers. Our guard keys its spent set on
+`(nullifier, nonce)` specifically to allow repeat swaps (W-08); World ID caps it at
+one regardless.
+
+The documented answer does not work for on-chain verification. The migration guide
+names this pattern — "apps that allow users to verify before each claim using the
+same action (note this is an anti-pattern of World ID)" — and points to **Session
+Proofs**. But `onchain-verification.mdx` has exactly two sections, legacy v3 and v4
+uniqueness; sessions appear nowhere. They are verifiable only through
+`POST /api/v4/verify/{rp_id}`. Adopting them means moving verification to a trusted
+backend, which for a project whose entire point is verifying inside the swap is not
+a migration but an abandonment.
+
+What does work is **a fresh action per verification** — and this is the part worth
+recording, because the docs read as though it were impossible. Every reference to
+actions is about registering them ahead of time ("create v4 actions", "register
+your RP and relevant actions"), and `action_description` is annotated "only
+recommended for actions created on-the-fly" in the *v3* section only. On that basis
+we concluded actions had to be pre-registered and that a pool would have to be
+batch-created.
+
+Tested instead: requesting an **unregistered** action succeeds. World App issues the
+proof and the nullifier is fresh, because the nullifier is derived per action. So
+per-swap actions are viable, need no portal round-trip, and are the practical route
+to a repeatable action verified on-chain.
+
+Two consequences for an integrator:
+
+- The RP signature endpoint becomes the only thing standing between a caller and an
+  arbitrary action signed under your RP. An allowlist there is not hardening, it is
+  the control — see the signer's fail-closed behaviour.
+- A contract that pins the action as an immutable needs redeploying per action. The
+  action wants to be an argument, with `rpId` kept immutable so proofs still have to
+  originate from your RP.

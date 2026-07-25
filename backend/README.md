@@ -10,7 +10,7 @@ step to trust.
 
 ```
 POST /api/rp-signature
-  { "action": "world-demo-v2", "ttl": 300 }
+  { "action": "scubaswap-connect", "ttl": 300 }
 
 200 { "rp_id": "rp_…", "nonce": "0x00…", "created_at": …, "expires_at": …,
       "signature": "0x…" }        ← shaped for IDKit's rp_context
@@ -69,7 +69,7 @@ in no response, success or failure.
 
 ```bash
 cd backend && npm install
-RP_SIGNING_KEY=0x<64 hex> ALLOWED_ACTIONS=world-demo-v2 npm run dev
+RP_SIGNING_KEY=0x<64 hex> ALLOWED_ACTIONS=scubaswap-connect npm run dev
 npm test
 ```
 

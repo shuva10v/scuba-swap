@@ -15,7 +15,19 @@ cd "$(dirname "$0")/.."
 RPC="${WORLDCHAIN_RPC_URL:-https://worldchain.drpc.org}"
 PORT="${ANVIL_PORT:-8545}"
 LOCAL="http://127.0.0.1:${PORT}"
-BLOCK="${FORK_BLOCK:-32820398}"
+# Fork at LATEST, not a pinned block.
+#
+# A World ID v4 proof carries its Merkle root as a public input, and the verifier
+# only accepts roots inside its ~1 hour history window. A pinned fork freezes that
+# history, so a freshly minted proof reverts InvalidMerkleRoot() — and because
+# JumpIfHumanTaker falls through on any failure, the human tier silently quotes the
+# open price with no error anywhere. Forking at latest keeps the identity tree
+# current, and also keeps block.timestamp near wall-clock so the guard's freshness
+# check means something.
+#
+# Test suites stay pinned deliberately (reproducibility + RPC caching); only the
+# live demo needs to track the chain.
+BLOCK="${FORK_BLOCK:-latest}"
 
 WETH=0x4200000000000000000000000000000000000006
 USDC=0x79A02482A880bCE3F13e09Da970dC34db4CD24d1
@@ -32,8 +44,11 @@ if [[ "${1:-}" != "--keep" ]]; then
   pkill -f "anvil.*--port ${PORT}" 2>/dev/null || true
   sleep 0.5
   log "forking World Chain @ ${BLOCK} on :${PORT}"
-  anvil --fork-url "$RPC" --fork-block-number "$BLOCK" --port "$PORT" \
-        --silent --chain-id 480 &
+  if [[ "$BLOCK" == "latest" ]]; then
+    anvil --fork-url "$RPC" --port "$PORT" --silent --chain-id 480 &
+  else
+    anvil --fork-url "$RPC" --fork-block-number "$BLOCK" --port "$PORT" --silent --chain-id 480 &
+  fi
   for _ in $(seq 1 40); do
     cast block-number --rpc-url "$LOCAL" >/dev/null 2>&1 && break
     sleep 0.5
@@ -96,18 +111,69 @@ fund_erc20 "$USDC" "$MAKER" 4000000000000             "maker USDC"   # 4,000,000
 fund_erc20 "$WETH" "$TAKER" 100000000000000000000     "taker WETH"   # 100
 fund_erc20 "$USDC" "$TAKER" 100000000000              "taker USDC"   # 100,000
 
-log "deploying Aqua, router, and shipping programs"
-forge script script/DeployDemo.s.sol \
-  --rpc-url "$LOCAL" --broadcast --private-key "$MAKER_PK" \
-  --skip-simulation >/dev/null 2>&1 || {
-    forge script script/DeployDemo.s.sol --rpc-url "$LOCAL" --broadcast \
-      --private-key "$MAKER_PK" --skip-simulation
-    die "deployment failed"
+# ---------------------------------------------------------------------------
+# Deploy with `forge create`, ship with `forge script`.
+#
+# The CREATEs cannot go through forge script: it fails to locate constructor
+# arguments inside via_ir init code and aborts with
+# `type check failed for "offset (usize)"` — after the script body has already
+# written demo.json, so the config named a router that was never deployed and every
+# downstream failure looked like a contract bug. via_ir is mandatory (SwapVM is
+# "stack too deep" without it), so the CREATEs move out here and the script is left
+# broadcasting only CALLs, which decode correctly.
+# ---------------------------------------------------------------------------
+ACTION="${WORLD_ID_ACTION:-scubaswap-connect}"
+VERIFIER="${WORLD_ID_VERIFIER:-0x703a6316c975DEabF30b637c155edD53e24657DB}"
+RP_ID_NUM="${WORLD_ID_RP_ID:-15578405237850119539}"
+
+create() { # <path:Name> [ctor args...]
+  local target=$1; shift
+  forge create "$target" --rpc-url "$LOCAL" --private-key "$MAKER_PK" --broadcast \
+    ${1+--constructor-args} "$@" 2>&1 | grep -oE "Deployed to: 0x[0-9a-fA-F]{40}" | awk '{print $3}'
+}
+
+log "deploying Aqua"
+AQUA=$(create node_modules/@1inch/aqua/src/Aqua.sol:Aqua)
+[[ -n "$AQUA" ]] || die "Aqua deployment failed"
+
+log "deploying ScubaSwapVMRouter (action=${ACTION})"
+ROUTER=$(create src/routers/ScubaSwapVMRouter.sol:ScubaSwapVMRouter \
+  "$AQUA" "$WETH" "$MAKER" "ScubaSwapVM" "1" "$VERIFIER" "$ACTION" "$RP_ID_NUM")
+[[ -n "$ROUTER" ]] || die "router deployment failed"
+
+for c in "$AQUA" "$ROUTER"; do
+  [[ "$(cast code "$c" --rpc-url "$LOCAL" | wc -c)" -gt 100 ]] || die "no code at ${c}"
+done
+log "aqua ${AQUA}"
+log "router ${ROUTER}"
+
+log "shipping programs"
+AQUA_ADDRESS="$AQUA" ROUTER_ADDRESS="$ROUTER" \
+WORLD_ID_ACTION="$ACTION" WORLD_ID_VERIFIER="$VERIFIER" WORLD_ID_RP_ID="$RP_ID_NUM" \
+forge script script/DeployDemo.s.sol --rpc-url "$LOCAL" --broadcast \
+  --private-key "$MAKER_PK" >/dev/null 2>&1 || {
+    AQUA_ADDRESS="$AQUA" ROUTER_ADDRESS="$ROUTER" \
+    WORLD_ID_ACTION="$ACTION" WORLD_ID_VERIFIER="$VERIFIER" WORLD_ID_RP_ID="$RP_ID_NUM" \
+    forge script script/DeployDemo.s.sol --rpc-url "$LOCAL" --broadcast --private-key "$MAKER_PK"
+    die "shipping failed"
   }
 
 [[ -f deployments/demo.json ]] || die "deployments/demo.json was not written"
 
+# Assert the recorded router actually EXISTS before declaring success.
+#
+# The script writes demo.json during simulation, where `new Router()` returns an
+# address derived from the simulated nonce. Deploying repeatedly onto persisted
+# anvil state can drift that from the broadcast nonce, so the file ends up naming
+# an address with no code — and every downstream failure then looks like a
+# contract bug rather than a stale config. Checking here keeps that honest.
 ROUTER=$(python3 -c "import json;print(json.load(open('deployments/demo.json'))['router'])")
+CODE=$(cast code "$ROUTER" --rpc-url "$LOCAL" 2>/dev/null)
+if [[ "${#CODE}" -lt 100 ]]; then
+  die "demo.json names router ${ROUTER}, which has no code. Simulation and broadcast
+     addresses diverged — restart anvil clean (drop --keep) so nonces are deterministic."
+fi
+
 log "router ${ROUTER}"
 
 # Smoke test: real quotes against the shipped programs, using the SAME encoder

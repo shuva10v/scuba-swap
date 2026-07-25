@@ -42,7 +42,7 @@ if (!asset) {
 console.log(`asset: ${asset.replace(`${OUT}/`, "")}`);
 
 process.env.RP_SIGNING_KEY ??= `0x${"ab".repeat(32)}`; // throwaway; never a real key
-process.env.ALLOWED_ACTIONS ??= "world-demo-v2";
+process.env.ALLOWED_ACTIONS ??= "scubaswap-connect";
 process.env.RP_ID ??= "rp_verify";
 
 let handler;

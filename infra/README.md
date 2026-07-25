@@ -75,8 +75,8 @@ CloudFront, so the stack ignores a lone `domainName` rather than half-configurin
 
 | Context key | Default | Meaning |
 | --- | --- | --- |
-| `allowedActions` | `world-demo-v2` | Comma-separated allowlist. The signer **fails closed** if this is empty. |
-| `rpId` | `rp_2c23993348beb0ce` | Echoed back as `rp_id` for convenience. |
+| `allowedActions` | `scubaswap-connect` | Comma-separated allowlist. The signer **fails closed** if this is empty. |
+| `rpId` | `rp_d8319d06a1241d73` | Echoed back as `rp_id` for convenience. |
 | `domainName` | — | Optional; needs `certificateArn` too. |
 | `certificateArn` | — | Must be an `us-east-1` certificate. |
 
