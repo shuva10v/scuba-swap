@@ -12,3 +12,6 @@ broadcast/
 *.PRIVATE.json
 *production*.json
 test/fixtures/**/production/
+
+# Demo chain state — regenerate with script/demo-up.sh
+deployments/demo.json

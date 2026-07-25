@@ -8,7 +8,7 @@ solc_version            = "0.8.30"
 optimizer               = true
 optimizer_runs          = 700
 via_ir                  = true
-fs_permissions          = [{ access = "read", path = "./test/fixtures" }]
+fs_permissions          = [{ access = "read", path = "./test/fixtures" }, { access = "read-write", path = "./deployments" }]
 
 # Fast iteration: same sources, no IR pipeline. Use for logic tests.
 # `forge test --profile fast`. Gas numbers from this profile are NOT comparable
