@@ -6,7 +6,7 @@
  * wetsuit goes on and the human tier unlocks → dive.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { formatUnits, parseUnits } from "viem";
 import { CredentialRequest, IDKitRequestWidget, setDebug } from "@worldcoin/idkit";
 
@@ -234,7 +234,55 @@ export default function App() {
     }
   }, []);
 
-  const programKey = proof ? "human" : "surface";
+  // The tier is chosen, not derived. It used to follow `proof` automatically, which
+  // meant the two prices could never be compared: gearing up silently moved you to
+  // the human tier and the surface number became hypothetical. Tapping a band picks
+  // the program the dive actually executes, so the fee difference is something you
+  // read off the chain rather than take on trust.
+  //
+  // Gearing up still *promotes* you once — earning the wetsuit and staying at the
+  // surface would be a strange default — but never demotes you afterwards.
+  const [tier, setTier] = useState("surface");
+  // Live quotes, reported up by DepthPanel so the dive computer shows the same
+  // figures rather than issuing its own calls.
+  const [quotes, setQuotes] = useState({});
+  const promotedRef = useRef(false);
+  useEffect(() => {
+    if (proof && !promotedRef.current) {
+      promotedRef.current = true;
+      setTier("human");
+    }
+    if (!proof) promotedRef.current = false;
+  }, [proof]);
+
+  const programKey = tier;
+
+  /**
+   * The "this dive" summary, straight from the live quotes.
+   *
+   * Undefined entries stay undefined rather than becoming zero: a band that has not
+   * quoted yet, or whose guard refused, must not render as "0.00 USDC" — that reads
+   * as a real price of nothing.
+   */
+  const thisDive = (() => {
+    const activeOut = quotes[tier]?.amountOut;
+    const surfaceOut = quotes.surface?.amountOut;
+    if (activeOut === undefined) return null;
+    const money = (v) =>
+      Number(formatUnits(v, PAIR.buyDecimals)).toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+    let vsSurface = "—";
+    if (surfaceOut !== undefined) {
+      if (tier === "surface") vsSurface = "baseline";
+      else {
+        const d = activeOut - surfaceOut;
+        vsSurface = `${d >= 0n ? "+" : "−"}${money(d < 0n ? -d : d)} USDC`;
+      }
+    }
+    return { out: money(activeOut), vsSurface };
+  })();
   // Guarded programs need the proof in takerArgs; the surface program ignores it.
   const takerData = buildTakerData({ isExactIn: true, isAToB: PAIR.isAToB, instructionsArgs: proof?.args ?? "0x" });
 
@@ -356,13 +404,27 @@ export default function App() {
   }, [address, amount, programKey, takerData, proof]);
 
   return (
-    <div style={{ maxWidth: 1280, margin: "0 auto", padding: "28px 24px 80px" }}>
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, marginBottom: 28, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <BubblesMark size={38} />
+    <div style={{ maxWidth: 1560, margin: "0 auto", padding: "28px 32px 44px" }}>
+      <header
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 24,
+          marginBottom: 30,
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <BubblesMark size={62} />
           <div>
-            <div style={{ fontFamily: "var(--display)", fontWeight: 700, fontSize: 22, letterSpacing: "-0.02em" }}>ScubaSwap</div>
-            <div className="eyebrow" style={{ color: "var(--locked)" }}>
+            <div style={{ fontFamily: "var(--display)", fontWeight: 700, fontSize: 30, letterSpacing: "-0.02em", lineHeight: 1 }}>
+              ScubaSwap
+            </div>
+            <div
+              className="mono"
+              style={{ fontSize: 12, letterSpacing: "0.14em", color: "var(--locked)", marginTop: 6, textTransform: "uppercase" }}
+            >
               1inch Aqua × World ID
             </div>
           </div>
@@ -378,7 +440,16 @@ export default function App() {
               silently prices at the open tier. */}
           {AVAILABLE_ENVIRONMENTS.length > 1 && (
             <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-            <div style={{ display: "flex", borderRadius: 8, overflow: "hidden", border: "1px solid var(--locked)" }}>
+            <div
+              style={{
+                display: "flex",
+                background: "var(--paper)",
+                border: "1px solid var(--edge)",
+                borderRadius: 10,
+                padding: 4,
+                gap: 4,
+              }}
+            >
               {AVAILABLE_ENVIRONMENTS.map((name) => (
                 <button
                   key={name}
@@ -404,10 +475,11 @@ export default function App() {
                   className="mono"
                   style={{
                     border: "none",
-                    padding: "7px 11px",
-                    fontSize: 11,
+                    padding: "7px 14px",
+                    borderRadius: 7,
+                    fontSize: 13,
                     cursor: name === environment ? "default" : "pointer",
-                    background: name === environment ? "var(--abyss)" : "transparent",
+                    background: name === environment ? "var(--hull)" : "transparent",
                     color: name === environment ? "#fff" : "var(--locked)",
                   }}
                   title={
@@ -442,7 +514,7 @@ export default function App() {
           {/* Explicitly labelled: an unlabelled truncated address sitting next
               to a Connect button reads as a connected account, which this is
               not — it is the contract the UI is pointed at. */}
-          <span className="mono" style={{ fontSize: 11, color: "var(--locked)", textAlign: "right", lineHeight: 1.5 }}>
+          <span className="mono" style={{ fontSize: 12, color: "var(--locked)", textAlign: "right", lineHeight: 1.5 }}>
             <span style={{ opacity: 0.7 }}>router</span> {router.slice(0, 6)}…{router.slice(-4)}
             <br />
             <span style={{ opacity: 0.7 }}>{IS_MAINNET ? "World Chain" : "World Chain fork"} · chain {DEMO.chainId}</span>
@@ -462,7 +534,14 @@ export default function App() {
         </div>
       </header>
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(260px, 300px) minmax(0, 1fr) minmax(280px, 330px)", gap: 24, alignItems: "start" }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "340px minmax(560px, 1fr) 400px",
+          gap: 34,
+          alignItems: "start",
+        }}
+      >
         <DiverPanel
           address={address}
           proof={proof}
@@ -564,15 +643,87 @@ export default function App() {
           busy={busy}
           programs={programs}
           router={router}
+          tier={tier}
+          setTier={setTier}
+          onQuotes={setQuotes}
         />
 
-        <DiveComputer programKey={programKey} programs={programs} activePc={activePc} failedPc={failedPc} gas={gas} />
+        <DiveComputer
+          programKey={programKey}
+          programs={programs}
+          activePc={activePc}
+          failedPc={failedPc}
+          gas={gas}
+          thisDive={thisDive}
+        />
       </div>
 
-      <footer className="mono" style={{ marginTop: 40, fontSize: 11.5, color: "var(--locked)", lineHeight: 1.7 }}>
-        Every quote on this page is a live <code>quote()</code> against the shipped Aqua
-        programs — nothing is simulated. Mask and tank are visual roadmap; v1 attests
-        personhood only.
+      <footer
+        style={{
+          marginTop: 40,
+          paddingTop: 22,
+          borderTop: "1px solid #cbd9de",
+          display: "flex",
+          alignItems: "center",
+          gap: 18,
+          flexWrap: "wrap",
+        }}
+      >
+        <a
+          href="https://ethglobal.com/events/lisbon2026"
+          target="_blank"
+          rel="noreferrer noopener"
+          style={{ display: "flex", alignItems: "center", gap: 12, textDecoration: "none", color: "var(--abyss)" }}
+        >
+          <span
+            style={{
+              width: 26,
+              height: 26,
+              background: "var(--abyss)",
+              transform: "rotate(45deg)",
+              borderRadius: 4,
+              display: "inline-block",
+            }}
+          />
+          <span className="mono" style={{ fontSize: 13, letterSpacing: ".1em" }}>
+            ETHGLOBAL
+          </span>
+          <span style={{ fontSize: 15, color: "#4a626c" }}>Built during ETHGlobal Lisbon 2026</span>
+        </a>
+
+        <div style={{ flex: 1 }} />
+
+        {/* The claim the whole page rests on, kept in the footer rather than dropped
+            for the new links: every figure above is a live call, and the roadmap gear
+            is labelled as roadmap. */}
+        <span className="mono" style={{ fontSize: 11.5, color: "var(--locked)", lineHeight: 1.7, maxWidth: 520 }}>
+          Every quote is a live <code>quote()</code> against the shipped Aqua programs —
+          nothing is simulated. Mask and tank are roadmap; v1 attests personhood only.
+        </span>
+
+        <a
+          href={REPO_URL}
+          target="_blank"
+          rel="noreferrer noopener"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 10,
+            background: "var(--hull)",
+            color: "#fff",
+            textDecoration: "none",
+            borderRadius: 12,
+            padding: "13px 20px",
+            fontSize: 15,
+            fontWeight: 700,
+            fontFamily: "var(--display)",
+          }}
+        >
+          <svg width="17" height="17" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-2.92-.88-2.92-2.9 0-.58.21-1.06.55-1.43-.05-.13-.24-.66.05-1.37 0 0 .59-.19 1.94.72a5.4 5.4 0 0 1 1.47-.2c.5 0 1 .07 1.47.2 1.35-.92 1.94-.72 1.94-.72.29.71.1 1.24.05 1.37.34.37.55.85.55 1.43 0 2.03-1.15 2.7-2.93 2.9.3.26.57.77.57 1.56 0 1.11-.01 2.01-.01 2.29 0 .21.15.46.55.38A7.99 7.99 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+          </svg>
+          GitHub repo
+        </a>
       </footer>
     </div>
   );

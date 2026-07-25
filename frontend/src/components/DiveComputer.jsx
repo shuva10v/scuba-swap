@@ -11,7 +11,7 @@ import { useMemo } from "react";
 
 import { decodeProgramFromOrderData } from "../lib/program";
 
-export default function DiveComputer({ programKey, programs, activePc, failedPc, gas }) {
+export default function DiveComputer({ programKey, programs, activePc, failedPc, gas, thisDive }) {
   const program = programs[programKey];
   const rows = useMemo(() => decodeProgramFromOrderData(program.data), [program.data]);
 
@@ -19,9 +19,9 @@ export default function DiveComputer({ programKey, programs, activePc, failedPc,
     <aside
       style={{
         background: "var(--abyss)",
-        color: "var(--sunlit)",
-        borderRadius: 14,
-        padding: 20,
+        color: "#cfe6ee",
+        borderRadius: 18,
+        padding: "26px 24px",
         display: "flex",
         flexDirection: "column",
         gap: 14,
@@ -29,11 +29,14 @@ export default function DiveComputer({ programKey, programs, activePc, failedPc,
       }}
     >
       <header>
-        <div className="eyebrow" style={{ color: "var(--midwater)" }}>
+        <div className="eyebrow" style={{ color: "var(--sunlit)" }}>
           Dive computer
         </div>
-        <div style={{ fontFamily: "var(--display)", fontWeight: 700, fontSize: 17, color: "#fff", marginTop: 4 }}>
-          {program.label} · {program.depth}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "10px 0 0" }}>
+          <span style={{ width: 9, height: 9, borderRadius: "50%", background: "var(--verified)", flexShrink: 0 }} />
+          <div style={{ fontFamily: "var(--display)", fontWeight: 700, fontSize: 23, color: "#fff", letterSpacing: "-0.02em" }}>
+            {program.label} · {program.depth}
+          </div>
         </div>
       </header>
 
@@ -70,12 +73,12 @@ export default function DiveComputer({ programKey, programs, activePc, failedPc,
         })}
       </div>
 
-      <div style={{ height: 1, background: "var(--midwater)", opacity: 0.5 }} />
+      <div style={{ height: 1, background: "#14485a" }} />
 
       {/* Air gauge = gas. Real measured numbers from the Phase 4 gas report; the
           live figure replaces them once a swap has actually run. */}
       <div>
-        <div className="eyebrow" style={{ color: "var(--midwater)", marginBottom: 8 }}>
+        <div className="eyebrow" style={{ color: "var(--sunlit)", marginBottom: 8 }}>
           Air · gas
         </div>
         <div className="mono" style={{ fontSize: 12, display: "flex", flexDirection: "column", gap: 5 }}>
@@ -84,12 +87,37 @@ export default function DiveComputer({ programKey, programs, activePc, failedPc,
           <GaugeRow label="+ groth16 verify" value="~397k" max={620} n={397} />
           {gas != null && <GaugeRow label="this dive" value={`${Math.round(Number(gas) / 1000)}k`} max={620} n={Number(gas) / 1000} live />}
         </div>
-        <div style={{ fontSize: 11, opacity: 0.55, marginTop: 8, lineHeight: 1.5 }}>
+        <div style={{ fontSize: 14, color: "#8fb3bf", marginTop: 18, lineHeight: 1.55, textWrap: "pretty" }}>
           Verification is the expensive part, which is the honest argument for the
           tier split: the surface stays cheap for everyone.
         </div>
       </div>
+
+      {/* What the button in front of you is about to do, in four lines. Separate
+          from the gauges above because those are about the protocol and this is
+          about the trade — and every value is the live quote, not a projection. */}
+      <div style={{ height: 1, background: "#14485a" }} />
+      <div>
+        <div className="eyebrow" style={{ color: "var(--sunlit)", marginBottom: 12 }}>
+          This dive
+        </div>
+        <div className="mono" style={{ display: "flex", flexDirection: "column", gap: 9, fontSize: 14 }}>
+          <Row k="tier" v={program.label} />
+          <Row k="fee" v={program.feeLabel} />
+          <Row k="you receive" v={thisDive?.out ? `${thisDive.out} USDC` : "—"} accent />
+          <Row k="vs surface" v={thisDive?.vsSurface ?? "—"} />
+        </div>
+      </div>
     </aside>
+  );
+}
+
+function Row({ k, v, accent }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+      <span style={{ color: "#8fb3bf" }}>{k}</span>
+      <span style={{ color: accent ? "var(--verified)" : "#fff", textAlign: "right" }}>{v}</span>
+    </div>
   );
 }
 

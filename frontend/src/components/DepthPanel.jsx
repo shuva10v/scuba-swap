@@ -1,16 +1,24 @@
 /**
- * Depth panel — ocean cross-section, one band per program.
+ * Depth panel — ocean cross-section, one band per program, plus the depth ruler.
  *
  * Every number here is a real `quote()` against the shipped programs. Nothing is
  * simulated: if the chain is down the bands say so rather than showing a
  * plausible figure, because a fake quote is the one thing that would make the
  * whole demo dishonest.
+ *
+ * The bands are selectable, which is new and load-bearing. Tapping one chooses the
+ * program the dive will actually execute, so the tier split stops being a claim:
+ * you price the same swap through the open program and the tiered one, side by
+ * side, and read the fee difference off the chain.
  */
 
 import { useEffect, useState } from "react";
 import { formatUnits, parseUnits } from "viem";
-import { PAIR, quote } from "../lib/chain";
+import { PAIR, erc20Abi, publicClient, quote } from "../lib/chain";
 import Diver, { Crab } from "./Diver";
+
+/** How often live quotes refresh. The header states this, so it has to be true. */
+export const QUOTE_REFRESH_MS = 4000;
 
 const BANDS = [
   {
@@ -19,7 +27,10 @@ const BANDS = [
     title: "Surface",
     blurb: "Open pool. Bots welcome. Worst price.",
     bg: "var(--sunlit)",
-    fg: "var(--abyss)",
+    ink: "var(--abyss)",
+    dim: "#0b4650",
+    height: 190,
+    rulerTop: -8,
   },
   {
     key: "human",
@@ -27,47 +38,105 @@ const BANDS = [
     title: "Human tier",
     blurb: "Wetsuit required. Reduced fee, same liquidity.",
     bg: "var(--midwater)",
-    fg: "#fff",
+    ink: "#fff",
+    dim: "#bfe6f2",
+    height: 286,
+    rulerTop: 182,
   },
   {
     key: "reef",
     depth: "−30 m",
     title: "The reef",
     blurb: "Human-only pool. No proof, no entry.",
-    bg: "var(--abyss)",
-    fg: "var(--sunlit)",
+    bg: "var(--reef)",
+    ink: "#fff",
+    dim: "#d3dbde",
+    height: 200,
+    rulerTop: 472,
   },
 ];
 
-export default function DepthPanel({ amount, setAmount, takerData, account, verified, onSwap, busy, programs, router }) {
+/** Where the "YOU" marker sits on the ruler, per selected band. */
+const MARKER_TOP = { surface: 103, human: 336, reef: 570 };
+
+export default function DepthPanel({
+  amount,
+  setAmount,
+  takerData,
+  account,
+  verified,
+  onSwap,
+  busy,
+  programs,
+  router,
+  tier,
+  setTier,
+  onQuotes,
+}) {
   const [quotes, setQuotes] = useState({});
+  const [balance, setBalance] = useState(null);
 
   const amountIn = safeParse(amount);
 
+  // The sold-token balance, read from the chain. A DEX form that shows a balance
+  // and a MAX button has to mean them: MAX fills in what you can actually spend.
+  useEffect(() => {
+    if (!account) {
+      setBalance(null);
+      return;
+    }
+    let live = true;
+    publicClient
+      .readContract({ address: PAIR.sell, abi: erc20Abi, functionName: "balanceOf", args: [account] })
+      .then((b) => live && setBalance(b))
+      .catch(() => live && setBalance(null));
+    return () => {
+      live = false;
+    };
+    // `busy` is a dependency so the balance re-reads when a dive finishes — a swap
+    // spends the sold token, and a MAX button offering a balance you no longer hold
+    // would build a transaction that reverts on transfer.
+  }, [account, busy]);
+
+  // Quotes refresh on a timer as well as on input. The pool moves, so a figure
+  // that was true a minute ago is not a live quote — and the header claims 4s.
   useEffect(() => {
     if (!amountIn) {
       setQuotes({});
       return;
     }
     let live = true;
-    (async () => {
+    const run = async () => {
       const entries = await Promise.all(
-        BANDS.map(async (b) => [b.key, await quote({ router, program: programs[b.key], amountIn, takerData, account })]),
+        BANDS.map(async (b) => [
+          b.key,
+          await quote({ router, program: programs[b.key], amountIn, takerData, account }),
+        ]),
       );
-      if (live) setQuotes(Object.fromEntries(entries));
-    })();
+      if (!live) return;
+      const map = Object.fromEntries(entries);
+      setQuotes(map);
+      // The dive computer needs the same numbers; reporting them up beats quoting
+      // twice, which would double the RPC load and could disagree between panels.
+      onQuotes?.(map);
+    };
+    run();
+    const id = setInterval(run, QUOTE_REFRESH_MS);
     return () => {
       live = false;
+      clearInterval(id);
     };
-  }, [amountIn, takerData, account, router, programs]);
+  }, [amountIn, takerData, account, router, programs, onQuotes]);
 
-  // The diver sinks to the deepest band the gear allows. v1 earns −10 m; the
-  // reef stays locked, so the diver never reaches it.
-  const diverBand = verified ? 1 : 0;
+  const out = (k) => quotes[k]?.amountOut;
+  const activeOut = out(tier);
+  const surfaceOut = out("surface");
+  const humanOut = out("human");
 
-  const surfaceOut = quotes.surface?.amountOut;
-  const humanOut = quotes.human?.amountOut;
-  const saved = surfaceOut && humanOut && humanOut > surfaceOut ? humanOut - surfaceOut : null;
+  // The reef is reachable only if its program actually quotes. It is a human-only
+  // program, so on chain a wetsuit is enough — but if the guard refuses we say so
+  // rather than showing a number nobody can trade against.
+  const reefReachable = out("reef") !== undefined;
 
   /**
    * Detect the tiered guard falling through.
@@ -84,171 +153,586 @@ export default function DepthPanel({ amount, setAmount, takerData, account, veri
   const fellThrough = verified && surfaceOut !== undefined && humanOut === surfaceOut;
   const fallThroughReason = quotes.reef?.error;
 
+  const activeBand = BANDS.find((b) => b.key === tier);
+  const activeQuote = quotes[tier];
+
+  // Rate implied by the live quote, not by a stored price. Derived rather than
+  // fetched so it can never disagree with the number above it.
+  const rate =
+    activeOut !== undefined && amountIn
+      ? (Number(formatUnits(activeOut, PAIR.buyDecimals)) / Number(formatUnits(amountIn, PAIR.sellDecimals))).toLocaleString(
+          undefined,
+          { minimumFractionDigits: 2, maximumFractionDigits: 2 },
+        )
+      : null;
+
+  const vsSurfaceNote =
+    surfaceOut === undefined || activeOut === undefined
+      ? null
+      : tier === "surface"
+        ? "surface pricing"
+        : activeOut === surfaceOut
+          ? "same as surface"
+          : `${activeOut > surfaceOut ? "+" : "−"}${fmt(
+              activeOut > surfaceOut ? activeOut - surfaceOut : surfaceOut - activeOut,
+              PAIR.buyDecimals,
+            )} USDC vs surface`;
+
   return (
-    <section style={{ display: "flex", flexDirection: "column", gap: 20, minWidth: 0 }}>
-      <header>
+    <section style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 14 }}>
         <div className="eyebrow" style={{ color: "var(--midwater)" }}>
           Depth · live quotes
         </div>
-        <h2 style={{ marginTop: 6 }}>Depth is a permission.</h2>
-      </header>
-
-      {/* Swap form. Deliberately boring — the metaphor lives in the frame, not
-          in the controls a user has to operate. */}
-      <div style={{ background: "var(--paper)", borderRadius: 14, padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
-        <label className="eyebrow" style={{ color: "var(--locked)" }} htmlFor="amt">
-          You pay
-        </label>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <input
-            id="amt"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-            inputMode="decimal"
-            className="mono"
-            style={{
-              flex: 1,
-              minWidth: 0,
-              border: "none",
-              outline: "none",
-              fontSize: 30,
-              fontWeight: 500,
-              color: "var(--abyss)",
-              background: "transparent",
-            }}
-          />
-          <span className="mono" style={{ fontSize: 15, color: "var(--locked)", flexShrink: 0 }}>
-            WETH → USDC
-          </span>
+        <div style={{ flex: 1 }} />
+        <div className="mono" style={{ fontSize: 12, color: "var(--locked)" }}>
+          quotes refresh {QUOTE_REFRESH_MS / 1000}s
         </div>
-        {amount && !amountIn && (
-          <div className="mono" style={{ fontSize: 12, color: "var(--coral)" }}>
-            not a number
-          </div>
-        )}
       </div>
+      <h1 style={{ fontSize: 40, letterSpacing: "-0.03em", margin: "12px 0 22px" }}>Depth is a permission.</h1>
 
-      {/* Bands */}
-      <div style={{ borderRadius: 14, overflow: "hidden" }}>
-        {BANDS.map((band, i) => {
-          const q = quotes[band.key];
-          // Reachable = the gear allows this depth. Surface is always open; the
-          // human tier needs a proof; the reef needs attestations that do not
-          // exist in v1, so it is permanently out of reach.
-          const reachable = i <= diverBand;
-          return (
-            <div
-              key={band.key}
+      {/* The swap form, in the shape every DEX uses: pay above, receive below, the
+          direction badge on the seam. Familiar on purpose — the novel thing here is
+          the depth metaphor, and it reads better when the controls do not also need
+          learning.
+
+          The receive card is `est.` because it is a quote: the price can move between
+          the read and the swap. */}
+      <div style={{ position: "relative", display: "flex", flexDirection: "column", gap: 6 }}>
+        <div style={{ background: "var(--paper)", borderRadius: 16, padding: "18px 24px 20px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <label className="eyebrow" style={{ color: "var(--locked)", flex: 1 }} htmlFor="amt">
+              You pay
+            </label>
+            {balance !== null && (
+              <div className="mono" style={{ fontSize: 12, color: "#8fa4ac" }}>
+                balance {trim(balance, PAIR.sellDecimals)} WETH
+              </div>
+            )}
+            {balance !== null && balance > 0n && (
+              <button
+                onClick={() => setAmount(formatUnits(balance, PAIR.sellDecimals))}
+                className="mono"
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  letterSpacing: ".08em",
+                  color: "var(--midwater)",
+                  background: "#e2f2f7",
+                  border: 0,
+                  borderRadius: 6,
+                  padding: "5px 9px",
+                  cursor: "pointer",
+                }}
+              >
+                MAX
+              </button>
+            )}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 16, marginTop: 4 }}>
+            <input
+              id="amt"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              inputMode="decimal"
               style={{
-                background: band.bg,
-                color: band.fg,
-                padding: "20px 22px",
-                display: "grid",
-                gridTemplateColumns: "1fr auto",
-                gap: 16,
-                alignItems: "center",
-                position: "relative",
-                minHeight: 118,
-                // The green rule the crab bounces off: the boundary between
-                // open water and the human tier.
-                borderTop: i === 1 ? "3px solid var(--verified)" : "none",
-                // Out-of-reach bands read as disabled rather than being hidden —
-                // the point is that the depth exists and you have not earned it.
-                // Desaturating keeps the ocean structure intact, where swapping in
-                // a flat grey would break the gradient the whole metaphor rests on.
-                filter: reachable ? "none" : "saturate(0.12)",
-                opacity: reachable ? 1 : 0.62,
-                transition: "filter 320ms ease, opacity 320ms ease",
+                flex: 1,
+                minWidth: 0,
+                border: 0,
+                outline: "none",
+                fontSize: 44,
+                fontWeight: 700,
+                letterSpacing: "-0.02em",
+                color: "var(--abyss)",
+                background: "transparent",
+                padding: "4px 0 0",
+                fontFamily: "var(--display)",
+              }}
+            />
+            <TokenPill symbol="WETH" dot="var(--hull)" />
+          </div>
+          {amount && !amountIn && (
+            <div className="mono" style={{ fontSize: 12, color: "var(--coral)", marginTop: 6 }}>
+              not a number
+            </div>
+          )}
+        </div>
+
+        {/* Direction badge, centred on the seam between the two cards. Static: this
+            pair is one-way in v1, so it is a diagram rather than a control. */}
+        <div
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            left: "50%",
+            top: "50%",
+            transform: "translate(-50%, -50%)",
+            zIndex: 2,
+            width: 40,
+            height: 40,
+            borderRadius: 12,
+            background: "var(--abyss)",
+            color: "var(--sunlit)",
+            border: "4px solid var(--shell)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 16,
+          }}
+        >
+          ↓
+        </div>
+
+        <div style={{ background: "var(--paper)", borderRadius: 16, padding: "18px 24px 20px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <div className="eyebrow" style={{ color: "var(--locked)", flex: 1 }}>
+              You receive (est.)
+            </div>
+            <div className="mono" style={{ fontSize: 12, color: "var(--midwater)" }}>
+              via {activeBand?.title} · {activeBand?.depth}
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 16, marginTop: 4 }}>
+            <div
+              style={{
+                flex: 1,
+                minWidth: 0,
+                fontSize: 44,
+                fontWeight: 700,
+                letterSpacing: "-0.02em",
+                paddingTop: 4,
+                fontFamily: "var(--display)",
+                color: activeQuote?.error ? "var(--coral)" : "var(--abyss)",
               }}
             >
-              <div style={{ minWidth: 0 }}>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-                  <span className="mono" style={{ fontSize: 12, opacity: 0.75 }}>
-                    {band.depth}
-                  </span>
-                  <span style={{ fontFamily: "var(--display)", fontWeight: 700, fontSize: 19 }}>{band.title}</span>
-                  <span className="mono" style={{ fontSize: 12, opacity: 0.75 }}>
-                    fee {programs[band.key].feeLabel}
-                  </span>
-                </div>
-                <div style={{ fontSize: 13, opacity: 0.8, marginTop: 4 }}>{band.blurb}</div>
+              {!amountIn
+                ? "0.00"
+                : activeQuote === undefined
+                  ? "…"
+                  : activeQuote.error
+                    ? "—"
+                    : fmt(activeQuote.amountOut, PAIR.buyDecimals)}
+            </div>
+            <TokenPill symbol="USDC" dot="#2775ca" />
+          </div>
 
-                {/* Name the silent fall-through, using the reef's reason. */}
-                {band.key === "human" && fellThrough && (
-                  <div
-                    className="mono"
-                    style={{
-                      marginTop: 8,
-                      fontSize: 11.5,
-                      background: "rgba(255,122,77,0.22)",
-                      borderRadius: 6,
-                      padding: "6px 8px",
-                      lineHeight: 1.45,
-                    }}
-                  >
-                    ⚠ proof rejected — priced as open
-                    {fallThroughReason && <> · {fallThroughReason.message.toLowerCase()}</>}
+          {/* Only facts. The design also showed a slippage figure; this build sends no
+              min-out on the swap, so quoting one would be inventing a guarantee the
+              contract does not make. */}
+          <div
+            className="mono"
+            style={{
+              display: "flex",
+              gap: 20,
+              marginTop: 14,
+              paddingTop: 14,
+              borderTop: "1px solid #eaf0f2",
+              fontSize: 12,
+              color: "var(--locked)",
+              flexWrap: "wrap",
+            }}
+          >
+            <span>rate 1 WETH = {rate ?? "—"} USDC</span>
+            <span>fee {programs[tier].feeLabel}</span>
+            {activeQuote?.error ? (
+              <span style={{ color: "var(--coral)" }}>{activeQuote.error.message}</span>
+            ) : (
+              vsSurfaceNote && <span style={{ color: "var(--verified-deep)" }}>{vsSurfaceNote}</span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "20px 2px 12px" }}>
+        <span style={{ width: 9, height: 9, borderRadius: "50%", background: "var(--verified)" }} />
+        <div className="mono" style={{ fontSize: 12, letterSpacing: "0.12em", color: "#4a626c" }}>
+          TAP A LAYER TO CHANGE DEPTH · CURRENTLY ROUTING AT {BANDS.find((b) => b.key === tier)?.depth}
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "62px 1fr", gap: "0 14px" }}>
+        {/* Depth ruler. The marker is the only thing that moves, and it moves
+            because the selection changed — it is state, not decoration. */}
+        <div style={{ position: "relative", borderRight: "2px solid #c3d3d9", margin: "8px 0" }}>
+          <div
+            style={{
+              position: "absolute",
+              right: -7,
+              top: MARKER_TOP[tier],
+              transition: "top .45s cubic-bezier(.4,0,.2,1)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 6, transform: "translateY(-50%)" }}>
+              <span className="mono" style={{ fontSize: 10, fontWeight: 700, color: "#00a06a", letterSpacing: ".1em" }}>
+                YOU
+              </span>
+              <span
+                style={{
+                  width: 12,
+                  height: 12,
+                  borderRadius: "50%",
+                  background: "var(--verified)",
+                  border: "2px solid var(--shell)",
+                }}
+              />
+            </div>
+          </div>
+          {BANDS.map((b) => (
+            <div
+              key={b.key}
+              className="mono"
+              style={{ position: "absolute", right: 14, top: b.rulerTop, fontSize: 12, color: "#8fa4ac" }}
+            >
+              {b.depth}
+            </div>
+          ))}
+        </div>
+
+        <div style={{ borderRadius: 16, overflow: "hidden" }}>
+          {BANDS.map((band, i) => {
+            const q = quotes[band.key];
+            const isActive = tier === band.key;
+            const locked = band.key === "reef" && !reefReachable;
+            const selectable = !locked;
+            const delta = q?.amountOut !== undefined && activeOut !== undefined ? q.amountOut - activeOut : null;
+
+            return (
+              <div key={band.key}>
+                {/* The green rule: the boundary between open water and the tier
+                    that requires a proof. */}
+                {i === 1 && <div style={{ height: 4, background: "var(--verified)" }} />}
+                <div
+                  onClick={selectable ? () => setTier(band.key) : undefined}
+                  role={selectable ? "button" : undefined}
+                  tabIndex={selectable ? 0 : undefined}
+                  aria-pressed={selectable ? isActive : undefined}
+                  onKeyDown={
+                    selectable
+                      ? (e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setTier(band.key);
+                          }
+                        }
+                      : undefined
+                  }
+                  style={{
+                    position: "relative",
+                    background: band.bg,
+                    color: band.ink,
+                    padding: band.key === "human" ? "30px 28px" : "26px 28px",
+                    height: band.height,
+                    boxSizing: "border-box",
+                    cursor: selectable ? "pointer" : "default",
+                    // Unselected bands desaturate rather than hide: the point is that
+                    // the depth exists and you are not currently at it.
+                    opacity: isActive ? 1 : 0.5,
+                    filter: isActive ? "none" : "saturate(0.45)",
+                    transition: "opacity .3s, filter .3s",
+                  }}
+                >
+                  {locked && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        inset: 0,
+                        background: "repeating-linear-gradient(135deg, #ffffff0f 0 10px, #00000000 10px 20px)",
+                      }}
+                    />
+                  )}
+
+                  <div style={{ position: "relative" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+                      <span className="mono" style={{ fontSize: 14, color: band.dim }}>
+                        {band.depth}
+                      </span>
+                      <span
+                        style={{
+                          fontFamily: "var(--display)",
+                          fontSize: 25,
+                          fontWeight: 700,
+                          letterSpacing: "-0.02em",
+                          color: band.key === "surface" ? "var(--abyss)" : "#fff",
+                        }}
+                      >
+                        {band.title}
+                      </span>
+                      <span className="mono" style={{ fontSize: 14, color: band.dim }}>
+                        fee {programs[band.key].feeLabel}
+                      </span>
+                      {isActive && (
+                        <span
+                          className="mono"
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 7,
+                            background: band.key === "human" ? "var(--verified)" : "var(--abyss)",
+                            color: band.key === "human" ? "var(--verified-ink)" : "var(--verified)",
+                            fontSize: 11,
+                            fontWeight: 700,
+                            letterSpacing: ".12em",
+                            padding: "6px 11px",
+                            borderRadius: 999,
+                          }}
+                        >
+                          ● ROUTING HERE
+                        </span>
+                      )}
+                      {locked && (
+                        <span
+                          className="mono"
+                          style={{
+                            display: "inline-flex",
+                            background: "#0000002e",
+                            color: "#fff",
+                            fontSize: 11,
+                            fontWeight: 700,
+                            letterSpacing: ".12em",
+                            padding: "6px 11px",
+                            borderRadius: 999,
+                          }}
+                        >
+                          LOCKED
+                        </span>
+                      )}
+                    </div>
+
+                    <div style={{ fontSize: 16, color: band.dim, marginTop: 8, maxWidth: "calc(100% - 150px)" }}>
+                      {band.blurb}
+                    </div>
+
+                    {/* Name the silent fall-through, using the reef's reason. */}
+                    {band.key === "human" && fellThrough && (
+                      <div
+                        className="mono"
+                        style={{
+                          marginTop: 10,
+                          fontSize: 11.5,
+                          background: "rgba(244,98,58,0.3)",
+                          borderRadius: 6,
+                          padding: "6px 8px",
+                          lineHeight: 1.45,
+                          maxWidth: "calc(100% - 150px)",
+                        }}
+                      >
+                        ⚠ proof rejected — priced as open
+                        {fallThroughReason && <> · {fallThroughReason.message.toLowerCase()}</>}
+                      </div>
+                    )}
+
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "baseline",
+                        gap: 12,
+                        marginTop: band.key === "human" ? 18 : 16,
+                        flexWrap: "wrap",
+                        maxWidth: "calc(100% - 150px)",
+                      }}
+                    >
+                      {!amountIn ? (
+                        <span className="mono" style={{ fontSize: 15, opacity: 0.75 }}>
+                          enter an amount
+                        </span>
+                      ) : q === undefined ? (
+                        <span className="mono" style={{ fontSize: 15, opacity: 0.75 }}>
+                          quoting…
+                        </span>
+                      ) : q.error ? (
+                        <span className="mono" style={{ fontSize: 14 }}>
+                          ✕ {q.error.message}
+                          {q.error.detail && <span style={{ opacity: 0.7 }}> · {q.error.detail}</span>}
+                        </span>
+                      ) : (
+                        <>
+                          <span
+                            className="mono"
+                            style={{
+                              fontSize: band.key === "human" ? 38 : 30,
+                              fontWeight: 700,
+                              color: band.key === "surface" ? "var(--abyss)" : "#fff",
+                            }}
+                          >
+                            {fmt(q.amountOut, PAIR.buyDecimals)}
+                          </span>
+                          <span className="mono" style={{ fontSize: 15, color: band.dim }}>
+                            USDC
+                          </span>
+                          {!isActive && delta !== null && delta !== 0n && (
+                            <span
+                              className="mono"
+                              style={{
+                                fontSize: 14,
+                                color: band.key === "surface" ? "#0b4650" : "#eaf7fb",
+                                background: band.key === "surface" ? "#ffffff5c" : "#ffffff2e",
+                                padding: "4px 9px",
+                                borderRadius: 7,
+                              }}
+                            >
+                              {delta > 0n ? "+" : "−"}
+                              {fmt(delta < 0n ? -delta : delta, PAIR.buyDecimals)} vs your tier
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </div>
+
+                    {/* What the tiered band actually does, stated rather than implied. */}
+                    {band.key === "human" && (
+                      <div
+                        className="mono"
+                        style={{
+                          display: "flex",
+                          gap: 22,
+                          marginTop: 22,
+                          paddingRight: 150,
+                          fontSize: 12,
+                          color: band.dim,
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <div>
+                          <div style={{ letterSpacing: ".1em" }}>ROUTE</div>
+                          <div style={{ color: "#fff", marginTop: 5 }}>Aqua · JumpIfHumanTaker</div>
+                        </div>
+                        <div>
+                          <div style={{ letterSpacing: ".1em" }}>PROOF</div>
+                          <div style={{ color: "#fff", marginTop: 5 }}>
+                            {verified ? "Wetsuit · spent on dive" : "None · prices as open"}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* The gear the reef waits on. Accurate: v1 attests personhood
+                        only, so neither exists yet. */}
+                    {band.key === "reef" && (
+                      <div className="mono" style={{ display: "flex", gap: 10, marginTop: 16 }}>
+                        {["Mask", "Tank"].map((g) => (
+                          <span
+                            key={g}
+                            style={{ fontSize: 12, border: "1px solid #ffffff59", borderRadius: 7, padding: "6px 10px" }}
+                          >
+                            {g} · missing
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                )}
 
-                <div className="mono" style={{ marginTop: 10, fontSize: 15 }}>
-                  {!amountIn ? (
-                    <span style={{ opacity: 0.6 }}>enter an amount</span>
-                  ) : q === undefined ? (
-                    <span style={{ opacity: 0.6 }}>quoting…</span>
-                  ) : q.error ? (
-                    <span style={{ opacity: 0.95 }}>
-                      ✕ {q.error.message}
-                      {q.error.detail && <span style={{ opacity: 0.6 }}> · {q.error.detail}</span>}
-                    </span>
-                  ) : (
-                    <strong style={{ fontSize: 19, fontWeight: 500 }}>
-                      {fmt(q.amountOut, PAIR.buyDecimals)} <span style={{ opacity: 0.7, fontSize: 14 }}>USDC</span>
-                    </strong>
+                  {/* The bot lives at the surface; the diver sits at the tier whose
+                      gear they hold. */}
+                  <div style={{ position: "absolute", right: 30, top: 40, pointerEvents: "none" }}>
+                    {band.key === "surface" && <Crab size={78} />}
+                    {band.key === "human" && verified && <Diver wetsuit="on" width={100} />}
+                  </div>
+
+                  {isActive && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        inset: 0,
+                        border: "4px solid var(--verified)",
+                        borderRadius: i === 0 ? "16px 16px 0 0" : i === BANDS.length - 1 ? "0 0 16px 16px" : 0,
+                        pointerEvents: "none",
+                      }}
+                    />
                   )}
                 </div>
               </div>
-
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-                          {/* The bot lives at the surface. Static: it is a statement about who
-                    trades here, not an animation to trigger. */}
-                {i === 0 && <Crab size={70} />}
-                {i === diverBand && <Diver wetsuit={verified ? "on" : "off"} width={92} />}
-              </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
 
-      <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 18, marginTop: 26, flexWrap: "wrap" }}>
         <button
           onClick={onSwap}
           disabled={!amountIn || busy || !account}
           style={{
-            background: verified ? "var(--verified)" : "var(--abyss)",
-            color: verified ? "var(--abyss)" : "#fff",
-            border: "none",
-            borderRadius: 10,
-            padding: "14px 26px",
+            background: "var(--verified)",
+            border: 0,
+            borderRadius: 14,
+            padding: "22px 34px",
             fontFamily: "var(--display)",
+            fontSize: 19,
             fontWeight: 700,
-            fontSize: 16,
+            color: "var(--verified-ink)",
             cursor: !amountIn || busy || !account ? "not-allowed" : "pointer",
             opacity: !amountIn || busy || !account ? 0.45 : 1,
-            transition: "background 260ms ease",
           }}
         >
-          {busy ? "Diving…" : verified ? "Dive to −10 m" : "Swim at surface"}
+          {busy
+            ? "Diving…"
+            : tier === "human"
+              ? "Swap · dive to −10 m"
+              : tier === "reef"
+                ? "Swap · dive to −30 m"
+                : "Swap at the surface"}
         </button>
 
-        {saved && (
-          <span className="mono" style={{ fontSize: 13, color: "var(--midwater)" }}>
-            +{fmt(saved, PAIR.buyDecimals)} USDC vs surface
-          </span>
+        {/* Only offered when you are not already there — a button that reselects the
+            tier you are on would do nothing. */}
+        {tier !== "surface" && (
+          <button
+            onClick={() => setTier("surface")}
+            style={{
+              background: "var(--paper)",
+              border: "1px solid var(--edge)",
+              borderRadius: 14,
+              padding: "22px 28px",
+              fontFamily: "var(--display)",
+              fontSize: 17,
+              fontWeight: 700,
+              color: "var(--abyss)",
+              cursor: "pointer",
+              whiteSpace: "nowrap",
+            }}
+          >
+            Swap on the surface instead
+          </button>
+        )}
+
+        {surfaceOut !== undefined && humanOut !== undefined && humanOut !== surfaceOut && (
+          <div className="mono" style={{ fontSize: 15, color: "var(--midwater)" }}>
+            {humanOut > surfaceOut ? "+" : "−"}
+            {fmt(humanOut > surfaceOut ? humanOut - surfaceOut : surfaceOut - humanOut, PAIR.buyDecimals)} USDC
+            {tier === "human" ? " vs surface" : " available at −10 m"}
+          </div>
         )}
       </div>
     </section>
   );
+}
+
+/**
+ * Token chip. Deliberately without the usual chevron: this deployment ships one
+ * pair, so a dropdown affordance would promise a picker that does not exist.
+ */
+function TokenPill({ symbol, dot }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        background: "#eff5f7",
+        borderRadius: 999,
+        padding: "9px 16px 9px 10px",
+        flexShrink: 0,
+      }}
+    >
+      <span style={{ width: 26, height: 26, borderRadius: "50%", background: dot }} />
+      <span style={{ fontSize: 17, fontWeight: 700, fontFamily: "var(--display)" }}>{symbol}</span>
+    </div>
+  );
+}
+
+/** Balance display — enough digits to be useful, not enough to wrap the row. */
+function trim(v, decimals) {
+  const n = Number(formatUnits(v, decimals));
+  return n.toLocaleString(undefined, { maximumFractionDigits: n < 1 ? 6 : 3 });
 }
 
 function safeParse(v) {

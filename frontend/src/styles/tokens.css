@@ -7,29 +7,36 @@
  * thing that makes the metaphor legible.
  */
 
-@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500;700&display=swap");
 
 :root {
   /* depth bands — each maps to a program */
-  --sunlit: #79d6e0; /* surface · open to all · 0.30%   */
-  --midwater: #1c7fa3; /* −10 m   · human tier  · 0.05%   */
-  --abyss: #0a2233; /* −30 m   · the reef (v2) · also ink */
+  --sunlit: #4fd3dd; /* surface · open to all · 0.30%   */
+  --midwater: #0086ad; /* −10 m   · human tier  · 0.05%   */
+  --abyss: #072b36; /* ink, and the dive computer's ground */
+  --reef: #7d8b90; /* −30 m   · locked until v2 gear     */
 
-  --coral: #ff7a4d; /* warm accent */
-  --skin: #ffb48a; /* diver skin tint */
-  --verified: #37d392; /* proof accepted · gear unlocked */
+  --coral: #f4623a; /* warm accent */
+  --skin: #f7bd90; /* diver skin tint */
+  --verified: #00e08a; /* proof accepted · gear unlocked */
+  --verified-ink: #04241a; /* readable ON verified, which is bright */
+  --verified-deep: #0b8f5f; /* verified as *text* on paper */
 
   --paper: #ffffff;
-  --mist: #f2f5f6; /* panel fill on paper */
-  --shell: #e8eef0; /* page background */
+  --mist: #e3eaed; /* rules and panel fills on paper */
+  --shell: #e4ecef; /* page background */
+  --hull: #0b2733; /* the diver's suit — deeper than ink */
+  --edge: #cfdce1; /* card borders on shell */
 
-  /* Not in the palette table but used throughout the doc for locked gear and
-     the bot crab. Kept as a token because "locked" is a real state. */
-  --locked: #8a9aa5;
+  /* Not in the palette table but used throughout for locked gear and the bot
+     crab. Kept as tokens because "locked" is a real state, and the doc uses two
+     weights of it: labels and secondary metadata. */
+  --locked: #6d8792;
+  --locked-soft: #7b919a;
 
   --display: "Space Grotesk", system-ui, sans-serif;
-  --ui: "IBM Plex Sans", system-ui, sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  --ui: "Space Grotesk", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
 
   --gear-transition: 260ms ease;
 }
@@ -80,6 +87,29 @@ h2 {
   font-size: 11px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
+}
+
+/* The diver idles rather than sitting still — the doc's only ambient motion. */
+@keyframes bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-7px);
+  }
+}
+
+/* A single bubble leaving the regulator. */
+@keyframes rise {
+  0% {
+    transform: translateY(0);
+    opacity: 0.9;
+  }
+  100% {
+    transform: translateY(-34px);
+    opacity: 0;
+  }
 }
 
 @keyframes bubble-rise {
