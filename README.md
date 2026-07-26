@@ -35,6 +35,12 @@ fall-through and names it.
 
 Verified end to end on World Chain mainnet: see [§0](#0-live).
 
+> **A note on the `F-nn` and `W-nn` codes below.** They point at entries in
+> **[FRICTION.md](./FRICTION.md)** — a log of every integration pain point hit while building
+> this, 16 for Aqua/SwapVM and 15 for World ID. Each entry records what broke, what the cause
+> turned out to be, and what would have prevented it. Most claims in this README that sound
+> surprising are cross-referenced there rather than argued here.
+
 ---
 
 ## 0. Live
@@ -137,8 +143,7 @@ plausible number.
       └──────── swap(order, amount, takerArgs) ──────┘                    maker's wallet
 ```
 
-Every integration pain point found along the way is logged in
-[FRICTION.md](./FRICTION.md) — 16 for Aqua/SwapVM, 14 for World ID.
+Every integration pain point found along the way is logged in [FRICTION.md](./FRICTION.md).
 
 ```
 src/
@@ -436,16 +441,31 @@ mainnet transactions, above.
 
 - [x] Deploy `ScubaSwapVMRouter` to an OP-stack chain — done, and to mainnet rather
       than a testnet, because World ID 4.0 exists only on World Chain (W-07)
-- [ ] Migrate to **sessions**, the primitive actually designed for a repeatable action.
-      Not adopted yet for two reasons, both documented in W-14: a session request cannot
-      express an identity check, which rules out the attestation gear on the roadmap; and
-      whether a session proof verifies on chain is genuinely unclear, since the on-chain
-      page never mentions sessions while the protocol repo says they share the circuits.
-- [ ] Mask and tank — age and jurisdiction attestations, the `−30 m` reef tier
+- [ ] Migrate to **sessions**, the primitive actually designed for a repeatable action —
+      `session_nullifier` is documented as `[nullifier, action]` with the action generated per
+      proof, which is precisely the `<prefix>-<timestamp>` scheme we hand-rolled. One blocker
+      remains and it is a documentation one: whether a session proof verifies on chain is
+      genuinely unclear, because the on-chain page never mentions sessions while the protocol
+      repo says they share the circuits. W-14.
 
-Explicitly **out of scope for v1**: document/age/country attestations and selfie
-freshness. The **v4 verifier path is not stretch — it is the only path this project ever
-used**; the v3 sketch in the original PoC was discarded in Phase 3.
+      The credential objection that used to sit here no longer holds: sessions take
+      `constraints`, so they can express `CredentialRequest("passport")` — and the identity
+      check they cannot express turns out to be unusable on chain anyway, for the reasons under
+      the tank below.
+- [x] **Mask — done, and it is a passport rather than an age attestation.** The `−30 m` reef
+      is program D: two `OnlyHumanTaker` guards, schema 1 then schema 9303, at 0.01%. Verified
+      by a real two-credential swap on mainnet ([`0x1f98fde9…`](https://worldscan.org/tx/0x1f98fde9dd6da8c25e55340af4edf87f911abfdc70499f31c8117c543d07a096)).
+- [ ] **Tank — blocked, not deferred.** It was meant to attest jurisdiction, and that cannot be
+      done on chain in v4 as it stands. Nationality and age are `identityCheck` *attributes*,
+      and `verify()` takes no attribute parameter — so they are attested only in off-chain JSON.
+      Worse, `identityCheck` exposes no `signal` and its responses carry no `signal_hash` at
+      all, so a proof from it cannot be bound to the taker and our guard can never verify it.
+      W-15. Unblocking needs either an attribute in the on-chain public inputs or a dedicated
+      schema id per attested property.
+
+Explicitly **out of scope for v1**: selfie freshness, and any attestation that exists only as
+an off-chain attribute (see the tank, above). The **v4 verifier path is not stretch — it is the
+only path this project ever used**; the v3 sketch in the original PoC was discarded in Phase 3.
 
 ---
 
