@@ -455,13 +455,8 @@ mainnet transactions, above.
 - [x] **Mask — done, and it is a passport rather than an age attestation.** The `−30 m` reef
       is program D: two `OnlyHumanTaker` guards, schema 1 then schema 9303, at 0.01%. Verified
       by a real two-credential swap on mainnet ([`0x1f98fde9…`](https://worldscan.org/tx/0x1f98fde9dd6da8c25e55340af4edf87f911abfdc70499f31c8117c543d07a096)).
-- [ ] **Tank — blocked, not deferred.** It was meant to attest jurisdiction, and that cannot be
-      done on chain in v4 as it stands. Nationality and age are `identityCheck` *attributes*,
-      and `verify()` takes no attribute parameter — so they are attested only in off-chain JSON.
-      Worse, `identityCheck` exposes no `signal` and its responses carry no `signal_hash` at
-      all, so a proof from it cannot be bound to the taker and our guard can never verify it.
-      W-15. Unblocking needs either an attribute in the on-chain public inputs or a dedicated
-      schema id per attested property.
+- [ ] **Tank — blocked upstream, not deferred.** Attested attributes never reach the chain and
+      `identityCheck` proofs cannot be bound to an address. See [§3](#3-next-steps).
 
 Explicitly **out of scope for v1**: selfie freshness, and any attestation that exists only as
 an off-chain attribute (see the tank, above). The **v4 verifier path is not stretch — it is the
@@ -469,7 +464,77 @@ only path this project ever used**; the v3 sketch in the original PoC was discar
 
 ---
 
-## 3. Resolved unknowns
+## 3. Next steps
+
+Three things we would do next, in the order we would do them.
+
+### Freshness ceiling — a known weakness, not a wishlist item
+
+`_isFresh` bounds a proof from below only:
+
+```solidity
+return uint256(expiresAtMin) + uint256(PROOF_FRESHNESS_WINDOW) >= block.timestamp;
+```
+
+Combined with W-12 — the client chooses `expires_at_min` at request time — a taker can mint
+proofs with an expiry a year out and they satisfy this check for a year. Verified by warping a
+fork 300 days forward: a year-out proof still passes.
+
+That reduces the guarantee from *"a human is here now"* to *"a human was here once"*, which is
+the scenario this project exists to prevent. Stockpiling costs one liveness check per proof, and
+because each dive names its own action there is no cap on how many can be pre-minted.
+
+The fix is a ceiling:
+
+```solidity
+uint256 e = uint256(expiresAtMin);
+return e + PROOF_FRESHNESS_WINDOW >= block.timestamp && e <= block.timestamp + MAX_LOOKAHEAD;
+```
+
+An hour of lookahead keeps every legitimately-issued proof (`expires_at_min` lands at roughly the
+moment of issuance) and rejects a stockpile. The frontend needs the mirror image: `proofStore`
+already discards a restored proof that is past the window, and would gain the same ceiling test,
+so a proof minted too far ahead is dropped on restore instead of surfacing as an on-chain revert
+after the wallet prompt.
+
+Left undone deliberately rather than overlooked — it was found by auditing our own guard after the
+demo was working, and it is the first thing we would merge.
+
+### Tank — age attestation, blocked upstream
+
+The tank was meant to attest age, and it cannot be done on chain in World ID 4.0 as it stands.
+Two independent blockers, both measured:
+
+- **No attribute reaches the chain.** Age is an `identityCheck` *attribute*, and `verify()` takes
+  only `issuerSchemaId` and `credentialGenesisIssuedAtMin`. A contract cannot distinguish a plain
+  passport proof from one constrained to age ≥ 18 — the constraint is enforced by World App and
+  attested only in off-chain JSON. Same shape as the presence bit in W-04.
+- **No signal to bind.** `identityCheck` exposes no `signal`, and its responses carry no
+  `signal_hash` at all. Our guard derives `signalHash` from `ctx.query.taker`, so a proof from it
+  can never verify — it fails closed, but the credential is unusable as an address-bound gate,
+  which is the entire point of verifying inside the swap. W-15.
+
+Unblocking needs a change on World ID's side: either attested attributes in the on-chain public
+inputs, or a dedicated `issuerSchemaId` per attested property (an "over-18" schema, verifiable the
+same way `9303` is today). The guard needs no change for the second option — `issuerSchemaId` is
+already maker policy, so a new schema id is a program change.
+
+### Maker UI for liquidity provisioning
+
+Everything a maker does today happens in `script/DeployDemo.s.sol`: composing program bytes by
+hand, choosing fees in parts-per-billion (F-11), picking `issuerSchemaId` values, sorting the pair
+(F-15), and calling `aqua.ship`. That is fine for us and hopeless for anyone else, and it is the
+gap between a demo and something a market maker could use.
+
+What it needs: a program composer that emits the bytes for a chosen tier structure, fees entered
+as percentages, credentials picked by name rather than schema id, the sort order handled
+invisibly, and a preview of the resulting `quote()` per tier before shipping. The per-order curve
+state from F-16 belongs on that screen too — a maker should see that a popular tier drains its own
+output reserve, because nothing else tells them.
+
+---
+
+## 4. Resolved unknowns
 
 Everything this plan was blocked on is answered, and each answer cost something worth
 recording:
